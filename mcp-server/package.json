@@ -1,0 +1,32 @@
+{
+  "name": "dex-alpha-radar-mcp",
+  "version": "1.0.0",
+  "private": true,
+  "description": "MCP server for dex-alpha-radar: DexScreener + RugCheck + GoPlus meme coin discovery and safety audits.",
+  "author": "Montassar Zarai",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "dex-alpha-radar-mcp": "dist/index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p ../tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "test": "node --import tsx --test ../test/unit/*.test.ts",
+    "test:integration": "node --import tsx --test --test-concurrency=1 ../test/integration/*.test.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.43",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2"
+  }
+}

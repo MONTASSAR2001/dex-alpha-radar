@@ -1,0 +1,13 @@
+{
+  "name": "dex-alpha-radar",
+  "version": "1.0.0",
+  "description": "Real-time meme coin opportunity discovery, momentum scoring and anti-rug auditing via DexScreener, RugCheck and GoPlus Security. By Montassar Zarai.",
+  "contextFileName": "SKILL.md",
+  "mcpServers": {
+    "dex-alpha-radar": {
+      "command": "node",
+      "args": ["${extensionPath}${/}scripts${/}mcp-launch.mjs"],
+      "cwd": "${extensionPath}"
+    }
+  }
+}

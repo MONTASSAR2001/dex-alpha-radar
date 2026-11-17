@@ -1,0 +1,24 @@
+{
+  "name": "dex-alpha-radar",
+  "version": "1.0.0",
+  "description": "Universal AI agent skill and MCP server: real-time meme coin discovery, momentum scoring and anti-rug auditing via DexScreener, RugCheck and GoPlus.",
+  "author": "Montassar Zarai",
+  "license": "MIT",
+  "type": "module",
+  "private": true,
+  "repository": { "type": "git", "url": "git+https://github.com/MONTASSAR2001/dex-alpha-radar.git" },
+  "homepage": "https://github.com/MONTASSAR2001/dex-alpha-radar#readme",
+  "bugs": { "url": "https://github.com/MONTASSAR2001/dex-alpha-radar/issues" },
+  "engines": { "node": ">=20" },
+  "keywords": ["mcp", "agent-skill", "dexscreener", "rugcheck", "goplus", "meme-coins", "solana", "crypto"],
+  "scripts": {
+    "setup": "npm --prefix mcp-server install --include=dev && npm --prefix mcp-server run build && npm run typecheck",
+    "build": "npm --prefix mcp-server run build",
+    "typecheck": "npm --prefix mcp-server run typecheck",
+    "start": "node scripts/mcp-launch.mjs",
+    "test": "npm run test:unit && npm run test:integration",
+    "test:unit": "npm --prefix mcp-server test",
+    "test:integration": "npm --prefix mcp-server run test:integration",
+    "validate": "node scripts/validate-manifests.mjs"
+  }
+}
