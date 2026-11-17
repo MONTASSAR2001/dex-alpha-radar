@@ -1,7 +1,8 @@
 import { looksLikeAddress, looksLikeEvmAddress, looksLikeSolanaAddress, normalizeAddress, normalizeChain, tokenKey } from "./chains.js";
 import { bestPairPerToken, dexUrl, type DexScreenerClient } from "./dexscreener.js";
 import { mapLimit } from "./limiter.js";
-import { buyRatio, computeAlphaScore, detectBreakout, pairAgeHours, type BreakoutSignal } from "./scoring.js";
+import { fetchBrowserTrending, type BrowserTrendingOptions, type BrowserTrendingResult } from "./browserFallback.js";
+import { analyzeWashTrading, buyRatio, computeAlphaScore, detectBreakout, pairAgeHours, type BreakoutSignal } from "./scoring.js";
 import type { SecurityAuditor } from "./security.js";
 import type { AlphaScore, Catalysts, DexPair, DexTokenSignal, SecurityReport } from "./types.js";
 
@@ -9,6 +10,8 @@ export interface ToolDeps {
   dex: DexScreenerClient;
   security: SecurityAuditor;
   now?: () => number;
+  /** Browser trending source (optional; defaults to the Playwright implementation). */
+  trending?: (opts: BrowserTrendingOptions) => Promise<BrowserTrendingResult>;
 }
 
 export const DISCLAIMER =
@@ -73,6 +76,54 @@ export async function collectCandidates(dex: DexScreenerClient, chain: string, m
     .sort((a, b) => b.sources.length - a.sources.length || b.boostAmount - a.boostAmount)
     .slice(0, maxCandidates);
   return { candidates, warnings };
+}
+
+export interface TrendingInfo {
+  requested: true;
+  status: BrowserTrendingResult["status"];
+  pairsFound: number;
+  tokensAdded: number;
+  message: string;
+}
+
+/**
+ * Optional browser source: trending pair addresses -> base tokens, so they enter the exact
+ * same batch fetch + audit + score pipeline as the API-discovered candidates.
+ */
+export async function trendingCandidates(deps: ToolDeps, chain: string): Promise<{ candidates: Candidate[]; info: TrendingInfo }> {
+  const run = deps.trending ?? fetchBrowserTrending;
+  const res = await run({ chain: chain === "all" ? undefined : chain, limit: 30 }).catch(
+    (e): BrowserTrendingResult => ({ status: "error", pairs: [], message: `Browser trending failed: ${e instanceof Error ? e.message : String(e)}` }),
+  );
+  const info: TrendingInfo = { requested: true, status: res.status, pairsFound: res.pairs.length, tokensAdded: 0, message: res.message };
+  const refs = res.pairs.filter((r) => chain === "all" || r.chainId.toLowerCase() === chain);
+  if (!refs.length) return { candidates: [], info };
+
+  const byChain = new Map<string, string[]>();
+  for (const r of refs) byChain.set(r.chainId.toLowerCase(), [...(byChain.get(r.chainId.toLowerCase()) ?? []), r.pairAddress]);
+  const fetched = await Promise.allSettled([...byChain].map(([c, ids]) => deps.dex.getPairs(c, ids)));
+  const seen = new Map<string, Candidate>();
+  for (const f of fetched) {
+    if (f.status !== "fulfilled") continue;
+    for (const p of f.value) {
+      const key = tokenKey(p.chainId, p.baseToken.address);
+      if (!seen.has(key)) seen.set(key, { chainId: p.chainId.toLowerCase(), tokenAddress: p.baseToken.address, sources: ["browser_trending"], boostAmount: 0, cto: false });
+    }
+  }
+  info.tokensAdded = seen.size;
+  return { candidates: [...seen.values()], info };
+}
+
+/** Merges extra candidates into a discovery list (sources are unioned). */
+export function mergeCandidates(base: Candidate[], extra: Candidate[], max = 150): Candidate[] {
+  const merged = new Map(base.map((c) => [tokenKey(c.chainId, c.tokenAddress), { ...c, sources: [...c.sources] }]));
+  for (const x of extra) {
+    const key = tokenKey(x.chainId, x.tokenAddress);
+    const cur = merged.get(key);
+    if (cur) cur.sources.push(...x.sources.filter((s) => !cur.sources.includes(s)));
+    else merged.set(key, { ...x });
+  }
+  return [...merged.values()].sort((a, b) => b.sources.length - a.sources.length || b.boostAmount - a.boostAmount).slice(0, max);
 }
 
 interface Enriched {
@@ -156,8 +207,15 @@ export function describePair(pair: DexPair, catalysts: Catalysts, score: AlphaSc
     rejected: score.rejected,
     scoreBreakdown: score.breakdown,
     reasons: score.reasons,
+    warnings: score.warnings,
+    tradeQuality: tradeQuality(pair),
     security: securitySummary(security),
   };
+}
+
+function tradeQuality(pair: DexPair) {
+  const w = analyzeWashTrading(pair);
+  return { avgTradeUsd1h: w.avgTradeUsd, txns1h: w.txns1h, volumeToLiquidity1h: w.volumeToLiquidity, washSuspected: w.suspected };
 }
 
 function round3(n: number | undefined): number | undefined {
@@ -169,7 +227,29 @@ async function auditAll(deps: ToolDeps, items: Enriched[], deep = false): Promis
   return new Map(items.map((e, i) => [tokenKey(e.pair.chainId, e.pair.baseToken.address), reports[i]!]));
 }
 
+/** Different tokens sharing a ticker inside one result set are a classic copycat pattern. */
+export function flagDuplicateSymbols<T extends { symbol: string; tokenAddress: string; chain: string; warnings: string[] }>(rows: T[]): T[] {
+  const byTicker = new Map<string, Set<string>>();
+  for (const r of rows) {
+    const k = r.symbol.toLowerCase();
+    byTicker.set(k, (byTicker.get(k) ?? new Set()).add(`${r.chain}:${r.tokenAddress.toLowerCase()}`));
+  }
+  return rows.map((r) => {
+    const n = byTicker.get(r.symbol.toLowerCase())?.size ?? 0;
+    return n > 1 ? { ...r, warnings: [...r.warnings, `Ticker $${r.symbol} is shared by ${n} different tokens in these results (possible copycat): verify the contract address`] } : r;
+  });
+}
+
 const secKey = (p: DexPair) => tokenKey(p.chainId, p.baseToken.address);
+
+/**
+ * Upgrades the audits of the final shortlist to deep audits (authority addresses, holder
+ * concentration). A deep audit that fails never downgrades a lite audit that succeeded.
+ */
+async function deepen(deps: ToolDeps, items: { e: Enriched; sec?: SecurityReport }[]): Promise<(SecurityReport | undefined)[]> {
+  const deep = await mapLimit(items, AUDIT_CONCURRENCY, (x) => deps.security.audit(x.e.pair.chainId, x.e.pair.baseToken.address, { deep: true }));
+  return items.map((x, i) => (deep[i]!.status === "UNVERIFIED" && x.sec && x.sec.status !== "UNVERIFIED" ? x.sec : deep[i]));
+}
 
 // ---------------------------------------------------------------------------
 // Tool 1: scan_opportunities
@@ -181,6 +261,8 @@ export interface ScanParams {
   maxAgeHours?: number;
   includeRisky?: boolean;
   limit?: number;
+  /** Also read DexScreener's trending view with a headless browser (optional, degrades gracefully). */
+  useBrowserTrending?: boolean;
 }
 
 export async function scanOpportunities(deps: ToolDeps, p: ScanParams = {}) {
@@ -191,7 +273,17 @@ export async function scanOpportunities(deps: ToolDeps, p: ScanParams = {}) {
   const limit = p.limit ?? 10;
   const includeRisky = p.includeRisky ?? false;
 
-  const { candidates, warnings } = await collectCandidates(deps.dex, chain);
+  const trending = p.useBrowserTrending ? await trendingCandidates(deps, chain) : undefined;
+  let discovery: Discovery;
+  try {
+    discovery = await collectCandidates(deps.dex, chain);
+  } catch (e) {
+    if (!trending?.candidates.length) throw e;
+    discovery = { candidates: [], warnings: [e instanceof Error ? e.message : String(e)] };
+  }
+  const warnings = discovery.warnings;
+  const candidates = trending ? mergeCandidates(discovery.candidates, trending.candidates) : discovery.candidates;
+  if (trending && trending.info.status !== "ok") warnings.push(trending.info.message);
   const enriched = await fetchCandidatePairs(deps.dex, candidates);
   const filtered = enriched.filter(({ pair }) => {
     if ((pair.liquidity?.usd ?? 0) < minLiq) return false;
@@ -201,24 +293,30 @@ export async function scanOpportunities(deps: ToolDeps, p: ScanParams = {}) {
 
   // Pre-rank without security, audit only the strongest, then re-rank.
   const prelim = filtered
-    .map((e) => ({ e, s: computeAlphaScore(e.pair, e.catalysts).alphaScore }))
+    .map((e) => ({ e, s: computeAlphaScore(e.pair, e.catalysts, undefined, now).alphaScore }))
     .sort((a, b) => b.s - a.s)
     .slice(0, Math.min(MAX_AUDITS, Math.max(limit * 2, limit)))
     .map((x) => x.e);
   const audits = await auditAll(deps, prelim);
 
-  const scored = prelim
-    .map((e) => {
+  const rank = (rows: { e: Enriched; sec?: SecurityReport; score: AlphaScore }[]) =>
+    rows
+      .filter((x) => includeRisky || !x.score.rejected)
+      .sort((a, b) => Number(a.score.rejected) - Number(b.score.rejected) || b.score.alphaScore - a.score.alphaScore);
+  const shortlist = rank(
+    prelim.map((e) => {
       const sec = audits.get(secKey(e.pair));
-      return { e, sec, score: computeAlphaScore(e.pair, e.catalysts, sec) };
-    })
-    .filter((x) => includeRisky || !x.score.rejected)
-    .sort((a, b) => Number(a.score.rejected) - Number(b.score.rejected) || b.score.alphaScore - a.score.alphaScore)
-    .slice(0, limit);
+      return { e, sec, score: computeAlphaScore(e.pair, e.catalysts, sec, now) };
+    }),
+  ).slice(0, limit);
+  // Deep-audit only the final shortlist (holder concentration, authority addresses), then re-rank.
+  const deepSec = await deepen(deps, shortlist);
+  const scored = rank(shortlist.map((x, i) => ({ e: x.e, sec: deepSec[i], score: computeAlphaScore(x.e.pair, x.e.catalysts, deepSec[i], now) })));
 
   return {
     generatedAt: new Date(now).toISOString(),
-    filters: { chain, minLiquidityUsd: minLiq, maxAgeHours: maxAge, includeRisky, limit },
+    filters: { chain, minLiquidityUsd: minLiq, maxAgeHours: maxAge, includeRisky, limit, useBrowserTrending: p.useBrowserTrending ?? false },
+    ...(trending ? { trending: trending.info } : {}),
     stats: {
       candidates: candidates.length,
       pairsFetched: enriched.length,
@@ -227,7 +325,7 @@ export async function scanOpportunities(deps: ToolDeps, p: ScanParams = {}) {
       returned: scored.length,
     },
     warnings,
-    results: scored.map((x, i) => ({ rank: i + 1, ...describePair(x.e.pair, x.e.catalysts, x.score, x.sec, now) })),
+    results: flagDuplicateSymbols(scored.map((x, i) => ({ rank: i + 1, ...describePair(x.e.pair, x.e.catalysts, x.score, x.sec, now) }))),
     disclaimer: DISCLAIMER,
   };
 }
@@ -280,7 +378,7 @@ export async function inspectToken(deps: ToolDeps, p: InspectParams) {
   }
   const catalysts: Catalysts = { boosted: (best.boosts?.active ?? 0) > 0, boostAmount: best.boosts?.active, cto };
   const security = await deps.security.audit(best.chainId, best.baseToken.address, { deep: true });
-  const score = computeAlphaScore(best, catalysts, security);
+  const score = computeAlphaScore(best, catalysts, security, now);
 
   return {
     found: true as const,
@@ -370,24 +468,30 @@ export async function detectMomentumBreakouts(deps: ToolDeps, p: BreakoutParams 
     hits.map((h) => h.e),
   );
 
-  const results = hits
+  const lite = hits
     .map((h) => {
       const sec = audits.get(secKey(h.e.pair));
-      return { ...h, sec, score: computeAlphaScore(h.e.pair, h.e.catalysts, sec) };
+      return { ...h, sec, score: computeAlphaScore(h.e.pair, h.e.catalysts, sec, now) };
     })
     .filter((x) => includeRisky || !x.score.rejected)
     .slice(0, limit);
+  const deepSec = await deepen(deps, lite);
+  const results = lite
+    .map((h, i) => ({ ...h, sec: deepSec[i], score: computeAlphaScore(h.e.pair, h.e.catalysts, deepSec[i], now) }))
+    .filter((x) => includeRisky || !x.score.rejected);
 
   return {
     generatedAt: new Date(now).toISOString(),
     filters: { chain, minLiquidityUsd: minLiq, maxAgeHours: maxAge, includeRisky, limit, thresholds: { minAcceleration: p.minAcceleration ?? 2, minBuyRatio: p.minBuyRatio ?? 0.6 } },
     stats: { candidates: candidates.length, scanned: pool.length, breakouts: signals.filter((x) => x.sig.isBreakout).length, returned: results.length },
     warnings,
-    results: results.map((x, i) => ({
-      rank: i + 1,
-      breakout: formatBreakout(x.sig),
-      ...describePair(x.e.pair, x.e.catalysts, x.score, x.sec, now),
-    })),
+    results: flagDuplicateSymbols(
+      results.map((x, i) => ({
+        rank: i + 1,
+        breakout: formatBreakout(x.sig),
+        ...describePair(x.e.pair, x.e.catalysts, x.score, x.sec, now),
+      })),
+    ),
     nearMisses: results.length
       ? []
       : signals
@@ -408,6 +512,7 @@ function formatBreakout(s: BreakoutSignal) {
     m5VolumeUsd: s.m5VolumeUsd,
     m5Txns: s.m5Txns,
     priceChangeM5: s.priceChangeM5,
+    washSuspected: s.washSuspected,
   };
 }
 
@@ -480,18 +585,19 @@ export async function compareWatchlist(deps: ToolDeps, p: CompareParams) {
   }
 
   // 3. Security and ranking.
-  const audits = await auditAll(deps, found);
+  // Deep audits (holders, authorities) for modest lists; lite for large ones to respect rate limits.
+  const audits = await auditAll(deps, found, found.length <= MAX_AUDITS);
   const rows = found
     .map((e) => {
       const sec = audits.get(secKey(e.pair));
-      return { e, sec, score: computeAlphaScore(e.pair, e.catalysts, sec) };
+      return { e, sec, score: computeAlphaScore(e.pair, e.catalysts, sec, now) };
     })
     .sort((a, b) => Number(a.score.rejected) - Number(b.score.rejected) || b.score.alphaScore - a.score.alphaScore);
 
   return {
     generatedAt: new Date(now).toISOString(),
     count: rows.length,
-    ranking: rows.map((x, i) => ({ rank: i + 1, ...describePair(x.e.pair, x.e.catalysts, x.score, x.sec, now) })),
+    ranking: flagDuplicateSymbols(rows.map((x, i) => ({ rank: i + 1, ...describePair(x.e.pair, x.e.catalysts, x.score, x.sec, now) }))),
     notFound,
     disclaimer: DISCLAIMER,
   };

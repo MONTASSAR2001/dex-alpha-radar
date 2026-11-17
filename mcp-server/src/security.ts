@@ -41,7 +41,33 @@ export interface RugCheckReport extends RugCheckSummary {
   token?: { mintAuthority?: string | null; freezeAuthority?: string | null };
   topHolders?: { pct?: number; address?: string; owner?: string; insider?: boolean }[] | null;
   rugged?: boolean;
-  markets?: { lp?: { lpLockedPct?: number } }[];
+  markets?: { pubkey?: string; lp?: { lpLockedPct?: number } }[];
+  /** address -> label. AMM / LOCKER / CEX accounts are not "whales". */
+  knownAccounts?: Record<string, { name?: string; type?: string }> | null;
+}
+
+/**
+ * Top-holder concentration that ignores liquidity pools, lockers and exchanges
+ * (otherwise a pool vault holding 25% of supply looks like a whale). Creator wallets are kept.
+ */
+export function holderConcentration(report: RugCheckReport | null | undefined): { top?: number; top10?: number; excluded: number } {
+  const holders = report?.topHolders ?? [];
+  const skip = new Set<string>();
+  for (const [addr, info] of Object.entries(report?.knownAccounts ?? {})) if (info?.type !== "CREATOR") skip.add(addr);
+  for (const m of report?.markets ?? []) if (m.pubkey) skip.add(m.pubkey);
+  let excluded = 0;
+  const pcts: number[] = [];
+  for (const h of holders) {
+    if (typeof h.pct !== "number") continue;
+    if ((h.address && skip.has(h.address)) || (h.owner && skip.has(h.owner))) {
+      excluded++;
+      continue;
+    }
+    pcts.push(h.pct);
+  }
+  if (!pcts.length) return { excluded };
+  pcts.sort((a, b) => b - a);
+  return { top: round(pcts[0] ?? 0), top10: round(pcts.slice(0, 10).reduce((a, b) => a + b, 0)), excluded };
 }
 
 function isActiveAuthority(v: string | null | undefined): boolean | undefined {
@@ -97,12 +123,11 @@ export function classifyRugCheck(
   base.freezeAuthorityActive = freezeActive;
 
   // Holder concentration (RugCheck reports pct as a percentage, e.g. 12.5 = 12.5%).
-  const holders = (report?.topHolders ?? []).map((h) => h.pct).filter((p): p is number => typeof p === "number");
-  if (holders.length) {
-    holders.sort((a, b) => b - a);
-    base.topHolderPct = round(holders[0] ?? 0);
-    base.top10HolderPct = round(holders.slice(0, 10).reduce((a, b) => a + b, 0));
-    if ((base.topHolderPct ?? 0) >= 30) base.flags.push(`Top holder owns ${base.topHolderPct}% of supply (may include pool vaults)`);
+  const conc = holderConcentration(report);
+  if (conc.top !== undefined) {
+    base.topHolderPct = conc.top;
+    base.top10HolderPct = conc.top10;
+    if (conc.top >= 30) base.flags.push(`Top holder owns ${conc.top}% of supply`);
   }
   const lp = data.lpLockedPct ?? report?.markets?.find((m) => typeof m.lp?.lpLockedPct === "number")?.lp?.lpLockedPct;
   if (typeof lp === "number") base.lpLockedPct = round(lp);
@@ -142,6 +167,8 @@ export interface GoPlusTokenSecurity {
   hidden_owner?: string;
   can_take_back_ownership?: string;
   transfer_pausable?: string;
+  /** percent is a fraction (0.25 = 25%). */
+  holders?: { address?: string; percent?: string; is_contract?: number | string; is_locked?: number | string }[] | null;
   [k: string]: unknown;
 }
 
@@ -177,6 +204,16 @@ export function classifyGoPlus(chainId: string, address: string, entry?: GoPlusT
     buyTax,
     sellTax,
   });
+
+  // Wallet concentration: contracts (pools, lockers, routers) are excluded.
+  const wallets = (entry.holders ?? [])
+    .filter((h) => !flag(h.is_contract))
+    .map((h) => (frac(h.percent) ?? 0) * 100)
+    .sort((a, b) => b - a);
+  if (wallets.length) {
+    base.topHolderPct = round(wallets[0] ?? 0);
+    base.top10HolderPct = round(wallets.slice(0, 10).reduce((a, b) => a + b, 0));
+  }
 
   const danger: string[] = [];
   const warn: string[] = [];
@@ -229,6 +266,8 @@ export interface AuditOptions {
 
 export class SecurityAuditor {
   private readonly cache: TtlCache<SecurityReport>;
+  /** Raw RugCheck responses, so a deep audit reuses the summary a lite audit just fetched. */
+  private readonly rugRaw: TtlCache<unknown>;
   private readonly rugBucket: TokenBucket;
   private readonly goplusBucket: TokenBucket;
   private readonly http: HttpOptions;
@@ -239,6 +278,7 @@ export class SecurityAuditor {
     this.rugBase = opts.rugcheckBase ?? RUGCHECK_BASE;
     this.goBase = opts.goplusBase ?? GOPLUS_BASE;
     this.cache = new TtlCache<SecurityReport>(opts.cacheTtlMs ?? 120_000, opts.now);
+    this.rugRaw = new TtlCache<unknown>(opts.cacheTtlMs ?? 120_000, opts.now);
     this.http = {
       fetchImpl: opts.fetchImpl,
       sleep: opts.sleep,
@@ -255,13 +295,15 @@ export class SecurityAuditor {
   async audit(chainId: string, address: string, options: AuditOptions = {}): Promise<SecurityReport> {
     const chain = chainId.toLowerCase();
     const addr = address.trim();
-    const key = `${options.deep ? "deep" : "lite"}|${tokenKey(chain, addr)}`;
+    // Only RugCheck has a heavier "deep" report; GoPlus already returns everything in one call.
+    const deep = !!options.deep && chain === "solana";
+    const key = `${deep ? "deep" : "lite"}|${tokenKey(chain, addr)}`;
     const deepKey = `deep|${tokenKey(chain, addr)}`;
     const cached = this.cache.get(deepKey) ?? this.cache.get(key);
     if (cached) return cached;
     try {
       const report = await this.cache.wrap(key, async () => {
-        const r = chain === "solana" ? await this.auditSolana(addr, !!options.deep) : await this.auditEvm(chain, addr);
+        const r = chain === "solana" ? await this.auditSolana(addr, deep) : await this.auditEvm(chain, addr);
         if (r.status === "UNVERIFIED") throw new UnverifiedResult(r);
         return r;
       });
@@ -314,8 +356,10 @@ export class SecurityAuditor {
   }
 
   private async rugGet<T>(path: string): Promise<T> {
-    await this.rugBucket.acquire();
-    return fetchJson<T>(`${this.rugBase}${path}`, this.http);
+    return this.rugRaw.wrap(path, async () => {
+      await this.rugBucket.acquire();
+      return fetchJson<unknown>(`${this.rugBase}${path}`, this.http);
+    }) as Promise<T>;
   }
 }
 

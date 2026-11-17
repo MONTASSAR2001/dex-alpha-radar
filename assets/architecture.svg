@@ -21,7 +21,7 @@
   <text x="500" y="60" text-anchor="middle" font-size="12" fill="#8b949e">Meme coin discovery, momentum scoring and anti-rug auditing · by Montassar Zarai</text>
 
   <!-- Agents -->
-  <rect x="30" y="80" width="200" height="370" rx="12" fill="#161b22" stroke="#30363d"/>
+  <rect x="30" y="80" width="200" height="384" rx="12" fill="#161b22" stroke="#30363d"/>
   <text x="130" y="106" text-anchor="middle" font-size="12" font-weight="700" letter-spacing="1.5" fill="#8b949e">AI AGENTS</text>
   <g font-size="13" fill="#e6edf3" text-anchor="middle">
     <rect x="50" y="122" width="160" height="38" rx="8" fill="#21262d" stroke="#388bfd"/><text x="130" y="146">Claude Code</text>
@@ -34,7 +34,7 @@
   <text x="130" y="436" text-anchor="middle" font-size="11" fill="#8b949e">SKILL.md + MCP tools</text>
 
   <!-- Server -->
-  <rect x="290" y="80" width="420" height="370" rx="12" fill="#161b22" stroke="#388bfd" stroke-width="1.5"/>
+  <rect x="290" y="80" width="420" height="384" rx="12" fill="#161b22" stroke="#388bfd" stroke-width="1.5"/>
   <text x="500" y="106" text-anchor="middle" font-size="12" font-weight="700" letter-spacing="1.5" fill="#58a6ff">DEX-ALPHA-RADAR</text>
 
   <rect x="310" y="120" width="380" height="40" rx="8" fill="#21262d" stroke="#30363d"/>
@@ -75,7 +75,7 @@
   <text x="500" y="442" text-anchor="middle" font-size="10" fill="#8b949e">Node 20+ · native fetch · TypeScript · zero API keys</text>
 
   <!-- External -->
-  <rect x="770" y="80" width="200" height="370" rx="12" fill="#161b22" stroke="#30363d"/>
+  <rect x="770" y="80" width="200" height="384" rx="12" fill="#161b22" stroke="#30363d"/>
   <text x="870" y="106" text-anchor="middle" font-size="12" font-weight="700" letter-spacing="1.5" fill="#8b949e">LIVE DATA SOURCES</text>
 
   <rect x="790" y="122" width="160" height="116" rx="8" fill="#21262d" stroke="#bc8cff"/>
@@ -106,16 +106,16 @@
   <line x1="710" y1="385" x2="768" y2="385" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowG)"/>
 
   <!-- Pipeline -->
-  <rect x="30" y="472" width="940" height="70" rx="12" fill="#161b22" stroke="#30363d"/>
+  <rect x="30" y="484" width="940" height="76" rx="12" fill="#161b22" stroke="#30363d"/>
   <g font-size="13" text-anchor="middle" fill="#e6edf3" font-weight="600">
-    <rect x="60" y="492" width="150" height="32" rx="16" fill="#0d1117" stroke="#bc8cff"/><text x="135" y="513">1 · Discover</text>
-    <rect x="290" y="492" width="150" height="32" rx="16" fill="#0d1117" stroke="#388bfd"/><text x="365" y="513">2 · Batch + filter</text>
-    <rect x="520" y="492" width="150" height="32" rx="16" fill="#0d1117" stroke="#f0883e"/><text x="595" y="513">3 · Audit</text>
-    <rect x="750" y="492" width="200" height="32" rx="16" fill="#0d1117" stroke="#3fb950"/><text x="850" y="513">4 · Score + rank</text>
+    <rect x="60" y="504" width="150" height="32" rx="16" fill="#0d1117" stroke="#bc8cff"/><text x="135" y="525">1 · Discover</text>
+    <rect x="290" y="504" width="150" height="32" rx="16" fill="#0d1117" stroke="#388bfd"/><text x="365" y="525">2 · Batch + filter</text>
+    <rect x="520" y="504" width="150" height="32" rx="16" fill="#0d1117" stroke="#f0883e"/><text x="595" y="525">3 · Audit</text>
+    <rect x="750" y="504" width="200" height="32" rx="16" fill="#0d1117" stroke="#3fb950"/><text x="850" y="525">4 · Score + rank</text>
   </g>
   <g stroke="#8b949e" stroke-width="1.5" fill="none">
-    <path d="M214 508 H286"/><path d="M444 508 H516"/><path d="M674 508 H746"/>
+    <path d="M214 520 H286"/><path d="M444 520 H516"/><path d="M674 520 H746"/>
   </g>
-  <g fill="#8b949e"><path d="M286 504 l6 4 l-6 4z"/><path d="M516 504 l6 4 l-6 4z"/><path d="M746 504 l6 4 l-6 4z"/></g>
-  <text x="500" y="535" text-anchor="middle" font-size="10" fill="#8b949e">Research tooling only. Not financial advice.</text>
+  <g fill="#8b949e"><path d="M286 516 l6 4 l-6 4z"/><path d="M516 516 l6 4 l-6 4z"/><path d="M746 516 l6 4 l-6 4z"/></g>
+  <text x="500" y="550" text-anchor="middle" font-size="10" fill="#8b949e">Research tooling only. Not financial advice.</text>
 </svg>

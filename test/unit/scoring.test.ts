@@ -143,7 +143,7 @@ describe("computeAlphaScore", () => {
   it("breakdown components sum to the score before clamping", () => {
     const s = computeAlphaScore(makePair(), none, sec("SAFE"));
     const b = s.breakdown;
-    assert.ok(Math.abs(b.liquidity + b.pressure + b.velocity + b.social + b.securityAdjustment - s.alphaScore) < 0.2);
+    assert.ok(Math.abs(b.liquidity + b.pressure + b.velocity + b.social + b.manipulationPenalty + b.securityAdjustment - s.alphaScore) < 0.2);
     assert.ok(b.liquidity <= 25 && b.pressure <= 25 && b.velocity <= 25 && b.social <= 15);
   });
 

@@ -136,6 +136,16 @@ export class DexScreenerClient {
     return (res?.pairs ?? []).filter(isUsablePair);
   }
 
+  /** Fresh stats for many pairs on one chain (comma-separated, at most 30 per call). */
+  async getPairs(chainId: string, pairIds: readonly string[]): Promise<DexPair[]> {
+    const chain = assertSafeSegment("chainId", chainId);
+    const unique = [...new Set(pairIds.map((p) => assertSafeSegment("pairId", p.trim())))];
+    const results = await Promise.all(
+      chunk(unique, MAX_ADDRESSES_PER_CALL).map((g) => this.get<{ pairs?: DexPair[] }>("pairs", `/latest/dex/pairs/${chain}/${g.join(",")}`)),
+    );
+    return results.flatMap((r) => r?.pairs ?? []).filter(isUsablePair);
+  }
+
   /** Fresh stats for a single pair. */
   async getPair(chainId: string, pairId: string): Promise<DexPair | undefined> {
     const chain = assertSafeSegment("chainId", chainId);

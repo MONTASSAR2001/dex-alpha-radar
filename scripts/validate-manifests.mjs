@@ -57,10 +57,25 @@ const skill = read("SKILL.md");
 const fm = /^---\n([\s\S]*?)\n---\n/.exec(skill)?.[1];
 check(!!fm, "SKILL.md: missing YAML frontmatter");
 if (fm) {
+  // Agent Skills spec (agentskills.io): name <=64 chars [a-z0-9-], description <=1024,
+  // compatibility <=500, only the documented top-level keys, metadata is a flat string map.
+  const lines = fm.split("\n");
+  const topKeys = lines.filter((l) => /^[A-Za-z][\w-]*:/.test(l)).map((l) => l.split(":")[0]);
+  const ALLOWED = new Set(["name", "description", "license", "compatibility", "metadata", "allowed-tools"]);
+  for (const k of topKeys) check(ALLOWED.has(k), `SKILL.md: unknown frontmatter key "${k}"`);
   const name = /^name:\s*(.+)$/m.exec(fm)?.[1]?.trim();
   const desc = /^description:\s*(.+)$/m.exec(fm)?.[1]?.trim();
+  const compat = /^compatibility:\s*(.+)$/m.exec(fm)?.[1]?.trim();
   check(name === "dex-alpha-radar", "SKILL.md: name must be dex-alpha-radar");
+  check(/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name ?? "") && (name ?? "").length <= 64, "SKILL.md: name must be lowercase letters/digits/hyphens, <= 64 chars");
   check(!!desc && desc.length >= 80 && desc.length <= 1024, "SKILL.md: description must be 80-1024 chars");
+  check(!compat || compat.length <= 500, "SKILL.md: compatibility must be <= 500 chars");
+  check(!/^description:\s*[>|]/m.test(fm), "SKILL.md: keep description on a single line (portable across skill loaders)");
+  const metaLines = lines.slice(lines.findIndex((l) => l.startsWith("metadata:")) + 1).filter((l) => /^\s+\S/.test(l));
+  for (const l of metaLines) check(/^\s+[\w-]+:\s*"?[^\n]*"?$/.test(l), `SKILL.md: metadata must be a flat key/value map (${l.trim()})`);
+  const metaVersion = /^\s+version:\s*"?([\d.]+)"?/m.exec(fm)?.[1];
+  check(metaVersion === plugin?.version, `SKILL.md: metadata.version (${metaVersion}) differs from plugin.json (${plugin?.version})`);
+  check(skill.split("\n").length <= 500, "SKILL.md: should stay under 500 lines (progressive disclosure)");
 }
 for (const f of ["README.md", "LICENSE", "assets/architecture.svg", "scripts/mcp-launch.mjs", ".gitignore"]) check(existsSync(join(root, f)), `missing file: ${f}`);
 check(/Montassar Zarai/.test(read("LICENSE")), "LICENSE: must name Montassar Zarai");

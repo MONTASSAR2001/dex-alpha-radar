@@ -146,8 +146,9 @@ Aggregates latest boosts, top boosts, latest profiles and CTOs → batch-fetches
 | `maxAgeHours` | number | `72` | Maximum pair age |
 | `includeRisky` | boolean | `false` | Also return tokens whose verdict is `DANGER` (marked `rejected`) |
 | `limit` | integer | `10` | Max results (1-25) |
+| `useBrowserTrending` | boolean | `false` | Also read DexScreener's trending view with a local headless Chrome ([details](#optional-browser-trending)) |
 
-Each result carries: `rank`, `symbol`, `name`, `chain`, `tokenAddress`, `pairAddress`, `url`, exact `priceUsd`, `fdv`, `marketCap`, `liquidityUsd`, `ageHours`, `priceChangePct`, `volumeUsd`, `txns`, `buyRatio`, `links`, `catalysts`, `alphaScore`, `scoreBreakdown`, `reasons`, `rejected`, `security`.
+Each result carries: `rank`, `symbol`, `name`, `chain`, `tokenAddress`, `pairAddress`, `url`, exact `priceUsd`, `fdv`, `marketCap`, `liquidityUsd`, `ageHours`, `priceChangePct`, `volumeUsd`, `txns`, `buyRatio`, `links`, `catalysts`, `alphaScore`, `scoreBreakdown`, `reasons`, **`warnings`**, **`tradeQuality`**, `rejected`, `security`. When `useBrowserTrending` is set the response also has a `trending` object with the honest status of that source.
 
 ### `inspect_token`
 
@@ -208,9 +209,43 @@ Deterministic and fully explained: every result includes `scoreBreakdown` and `r
 | **Buy/sell pressure** | 0-25 | `m5` and `h1` buy ratios; 40% buys = 0, 75%+ = max, strong above 60%; small samples discounted |
 | **Volume velocity** | 0-25 | `h1 volume ÷ liquidity` turnover (max at 3x) + acceleration `m5 volume × 12 > h1 volume` |
 | **Socials / catalysts** | 0-15 | 3 pts each: website, X, Telegram, active DexScreener boost, community takeover |
+| **Manipulation** | 0 to -20 | Bot / wash-trading penalty, see [below](#anti-wash-trading-and-warnings) |
 | **Security** | +10 / -50 | `SAFE` +10 · `WARNING` -5 · `UNVERIFIED` 0 · `DANGER` -50 and **REJECTED** |
 
 Maximum = 25 + 25 + 25 + 15 + 10 = **100**.
+
+### Anti-wash-trading and warnings
+
+Meme coin volume is easy to fake with thousands of micro swaps. Every scored candidate (scan, breakouts, inspect, compare) is checked:
+
+| Signal | Rule | Effect |
+|---|---|---|
+| Tiny average trade | `volume.h1 / (buys + sells)` below **$15** with at least 50 transactions in 1h | Up to **-12** (full at $1 or less, zero at $15) and a warning such as `Low avg trade size ($4.20) over 500 txns in 1h: possible bot volume` |
+| Volume vs liquidity sanity | `volume.h1 > 20x liquidity` while the 1h price change is within ±5% | **-10** and a `possible wash trading` warning |
+| Breakouts | A volume surge that trips either signal | Not reported as a breakout (`washSuspected: true`) |
+
+Penalties are capped at -20. DexScreener's public API has no maker counts, so the maker-to-transaction ratio cannot be computed; the two proxies above are used instead. They are heuristics, not proof: a legitimate token with many small retail buys can trip the first one, which is why the result says "possible".
+
+Every candidate also carries a **`warnings`** array, for example:
+
+- `High top-10 holder concentration (48%)` (liquidity pools, lockers and exchanges are excluded from this number; the creator wallet is not)
+- `Unverified contract: source code is not open/verified`, `Mint authority is active`, `Sell tax 12%`
+- `Security UNVERIFIED: no audit data, treat as unsafe`
+- `Thin liquidity ($4.2k)`, `Liquidity is only 0.12% of FDV`, `Very new pair (27 min old)`
+- `Ticker $GTA is shared by 2 different tokens in these results (possible copycat)`
+
+`scan_opportunities` pre-ranks candidates with a light audit, then **deep-audits only the final shortlist** so holder-concentration warnings are available without spending the rate limit on every candidate.
+
+## Optional browser trending
+
+DexScreener's public API has no "trending" endpoint (boosts are the closest signal). With `useBrowserTrending: true`, [`browserFallback.ts`](mcp-server/src/browserFallback.ts) opens DexScreener's trending view in a **local headless Chrome/Chromium**, extracts the listed pair addresses, resolves them to tokens through the batch pairs endpoint, and feeds them into the exact same batch fetch, security audit and Alpha Score pipeline.
+
+- **Optional at every level.** `playwright-core` is an optional dependency (no browser is downloaded; an installed Chrome, Chromium or Edge is auto-detected, or set `DEX_ALPHA_CHROME_PATH`). If either is missing, the scan continues with API sources and reports `trending.status: "unavailable"`.
+- **It can be blocked, and it is not bypassed.** DexScreener sits behind Cloudflare, which commonly serves a human-verification page to headless browsers. In that case the status is `blocked`, with a message, and the scan continues with API sources. As tested while building this, plain headless Chrome was blocked. This project does not use stealth or fingerprint-spoofing tricks to defeat bot checks. If you want the trending view anyway, run a browser profile where you passed the check yourself: `DEX_ALPHA_BROWSER_PROFILE=~/.dex-alpha-profile DEX_ALPHA_BROWSER_HEADLESS=0`.
+- **Never throws.** Statuses: `ok`, `empty`, `blocked`, `unavailable`, `error`.
+- The extraction is verified against a real headless browser rendering a client-side page; see [Testing](#testing).
+
+Treat this feature as a best-effort extra. The API pipeline is the reliable core.
 
 ## Security audits
 
@@ -219,6 +254,8 @@ Maximum = 25 + 25 + 25 + 15 + 10 = **100**.
 | Solana | RugCheck `report/summary` (full `report` as fallback and for deep audits) | normalised score < 21 | 21 - 40 | > 40, **or** active mint / freeze authority, or marked rugged |
 | Ethereum, Base, BSC, Arbitrum, Polygon | GoPlus `token_security` | no flags | tax > 10%, closed source, hidden owner, pausable transfers, missing tax data | honeypot, `cannot_sell_all`, `owner_change_balance`, tax > 30% |
 | Anything else / API down / no data | n/a | | | `UNVERIFIED` (never `SAFE`) |
+
+Holder concentration (`topHolderPct`, `top10HolderPct`) ignores AMM vaults, lockers, exchanges (RugCheck `knownAccounts` and market accounts) and, on EVM, contract holders, so a liquidity pool is not mistaken for a whale.
 
 **Fail-closed:** timeouts, HTTP errors, malformed bodies, empty results, unsupported chains and invalid addresses all produce `UNVERIFIED`. Transient failures are never cached.
 
@@ -238,22 +275,28 @@ npm test                  # unit + live integration
 npm run test:unit         # offline, deterministic (mocked fixtures, fake clock)
 npm run test:integration  # live DexScreener / RugCheck / GoPlus + stdio launcher handshake
 SKIP_LIVE=1 npm test      # skip the live network tests explicitly
-npm run validate          # offline manifest checks
+npm run validate          # offline manifest + SKILL.md spec checks
 claude plugin validate .  # Claude Code manifest validation
+npm run verify:svg        # render assets/architecture.svg in headless Chrome and check its geometry
+npm run demo              # run all 5 tools through the stdio launcher against live data and print tables
 ```
 
 - **Unit** (`test/unit/`): scoring math, token-bucket pacing, TTL cache, 30-address batch grouping, backoff, RugCheck/GoPlus classification, fail-closed behaviour, all five tools against mocked APIs, and the MCP wiring over an in-memory transport.
-- **Integration** (`test/integration/`): real endpoints for schema compatibility, end-to-end tool runs, and a stdio handshake through `scripts/mcp-launch.mjs`. If the network is unreachable the live suites are reported as skipped with the reason.
+- **Integration** (`test/integration/`): real endpoints for schema compatibility, end-to-end tool runs, a stdio handshake through `scripts/mcp-launch.mjs`, the browser fallback against a real headless Chrome (local fixture pages: trending rows, a verification interstitial, an unreachable page) plus live dexscreener.com, and the architecture diagram rendered in Chrome. Suites that need the network or a browser are reported as skipped, with the reason, when it is unavailable.
+- **Diagram check**: `npm run verify:svg` measures every label's rendered bounding box and fails on clipped text, overlapping labels, text outside the viewBox or partially overlapping boxes.
 
 ## Repository layout
 
 ```text
 SKILL.md                     universal agent skill (workflow, rules, templates)
 scripts/mcp-launch.mjs       zero-config launcher: install + build on first start, then stdio
+scripts/demo.mjs             live end-to-end demo of all five tools
+scripts/verify-svg.mjs       geometry checker for the architecture diagram
 mcp-server/src/
   dexscreener.ts             rate-limited client, token buckets, 12 s TTL cache
   security.ts                RugCheck + GoPlus auditor, fail-closed classification
-  scoring.ts                 Alpha Score and breakout detection
+  scoring.ts                 Alpha Score, anti-wash-trading, warnings, breakout detection
+  browserFallback.ts         optional headless-Chrome trending extraction (degrades gracefully)
   tools.ts                   the five tool implementations
   index.ts                   MCP server (stdio) and tool registration
 .claude-plugin/              Claude Code plugin + marketplace manifests

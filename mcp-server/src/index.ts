@@ -16,7 +16,7 @@ import {
 } from "./tools.js";
 
 export const SERVER_NAME = "dex-alpha-radar";
-export const SERVER_VERSION = "1.0.0";
+export const SERVER_VERSION = "1.1.0";
 
 const chainParam = z
   .string()
@@ -52,6 +52,13 @@ export function createServer(deps: ToolDeps = { dex: new DexScreenerClient(), se
         maxAgeHours: z.number().positive().default(72).optional().describe("Maximum pair age in hours (default 72)."),
         includeRisky: z.boolean().default(false).optional().describe("Include tokens whose security verdict is DANGER (default false)."),
         limit: z.number().int().min(1).max(25).default(10).optional().describe("Max results (default 10)."),
+        useBrowserTrending: z
+          .boolean()
+          .default(false)
+          .optional()
+          .describe(
+            "Also read DexScreener's trending view with a local headless Chrome/Chromium (needs Chrome installed). Slower (up to ~40s); degrades gracefully to API sources if the browser is missing or DexScreener shows a bot check. See the `trending` field in the result.",
+          ),
       },
       annotations,
     },

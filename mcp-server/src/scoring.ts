@@ -6,6 +6,8 @@ import type { AlphaScore, Catalysts, DexPair, SecurityReport } from "./types.js"
  *   Buy/sell pressure  0-25   5m buy ratio (0-12.5) + 1h buy ratio (0-12.5)
  *   Volume velocity    0-25   1h turnover (0-15) + 5m->1h acceleration (0-10)
  *   Socials/catalysts  0-15   website, X, Telegram, active boost, CTO (3 each)
+ *   Manipulation       0 to -20 for bot / wash-trading signals (tiny avg trade size, extreme
+ *                      volume-to-liquidity turnover with flat price)
  *   Security           verified SAFE +10 | WARNING -5 | UNVERIFIED 0 (no bonus: fail-closed)
  *                      DANGER -50 and REJECTED (hard veto)
  *   Max = 25 + 25 + 25 + 15 + 10 = 100
@@ -127,13 +129,112 @@ export function securityAdjustment(security?: SecurityReport | null): { delta: n
   }
 }
 
-export function computeAlphaScore(pair: DexPair, catalysts: Catalysts, security?: SecurityReport | null): AlphaScore {
+// ---------------------------------------------------------------------------
+// Anti-wash-trading
+// ---------------------------------------------------------------------------
+
+/** Average 1h trade below this (USD) with many transactions suggests bot / wash volume. */
+export const MIN_AVG_TRADE_USD = 15;
+/** Minimum 1h transactions for the avg-trade-size signal to count as "high activity". */
+export const WASH_MIN_TXNS = 50;
+/** 1h volume above this multiple of liquidity with flat price is a wash-trading signal. */
+export const WASH_VOLUME_LIQ_MULTIPLE = 20;
+/** |1h price change| (%) below this counts as "flat". */
+export const WASH_FLAT_PRICE_PCT = 5;
+export const MAX_MANIPULATION_PENALTY = 20;
+/** Top-10 non-pool holder share (%) at or above which a concentration warning is raised. */
+export const HOLDER_CONCENTRATION_WARN_PCT = 40;
+
+export interface WashAnalysis {
+  /** volume.h1 / (buys + sells) in the last hour. */
+  avgTradeUsd: number | undefined;
+  txns1h: number;
+  /** volume.h1 / liquidity.usd. */
+  volumeToLiquidity: number | undefined;
+  /** Penalty in points (0..MAX_MANIPULATION_PENALTY), subtracted from the Alpha Score. */
+  penalty: number;
+  warnings: string[];
+  /** True when any wash-trading signal fired. */
+  suspected: boolean;
+}
+
+/**
+ * DexScreener does not expose maker counts, so two proxies are used:
+ *  1. average trade size: h1 volume / h1 txns, penalised when < $15 despite >= 50 txns
+ *  2. volume sanity: h1 volume > 20x liquidity while price stayed flat
+ */
+export function analyzeWashTrading(pair: DexPair): WashAnalysis {
+  const b = pair.txns?.h1?.buys ?? 0;
+  const s = pair.txns?.h1?.sells ?? 0;
+  const txns1h = b + s;
+  const vol = pair.volume?.h1;
+  const liq = pair.liquidity?.usd ?? 0;
+  const warnings: string[] = [];
+  let penalty = 0;
+
+  const avgTradeUsd = vol !== undefined && txns1h > 0 ? vol / txns1h : undefined;
+  if (avgTradeUsd !== undefined && txns1h >= WASH_MIN_TXNS && avgTradeUsd < MIN_AVG_TRADE_USD) {
+    // $15 -> 0 pts, $1 or less -> 12 pts.
+    penalty += lerp(avgTradeUsd, 1, MIN_AVG_TRADE_USD, 12, 0);
+    warnings.push(`Low avg trade size ($${avgTradeUsd.toFixed(2)}) over ${txns1h} txns in 1h: possible bot volume`);
+  }
+
+  const volumeToLiquidity = vol !== undefined && liq > 0 ? vol / liq : undefined;
+  const change1h = pair.priceChange?.h1;
+  if (volumeToLiquidity !== undefined && volumeToLiquidity > WASH_VOLUME_LIQ_MULTIPLE && change1h !== undefined && Math.abs(change1h) < WASH_FLAT_PRICE_PCT) {
+    penalty += 10;
+    warnings.push(
+      `1h volume is ${volumeToLiquidity.toFixed(1)}x liquidity with flat price (${change1h >= 0 ? "+" : ""}${change1h}%): possible wash trading`,
+    );
+  }
+
+  return {
+    avgTradeUsd: avgTradeUsd === undefined ? undefined : Math.round(avgTradeUsd * 100) / 100,
+    txns1h,
+    volumeToLiquidity: volumeToLiquidity === undefined ? undefined : r1(volumeToLiquidity),
+    penalty: r1(Math.min(MAX_MANIPULATION_PENALTY, penalty)),
+    warnings,
+    suspected: warnings.length > 0,
+  };
+}
+
+/** Actionable risk warnings for a candidate, most severe first. */
+export function buildWarnings(pair: DexPair, wash: WashAnalysis, security?: SecurityReport | null, now = Date.now()): string[] {
+  const out: string[] = [];
+  if (security) {
+    if (security.status === "DANGER") out.push(`Security DANGER: ${security.verdict}`);
+    if (security.status === "UNVERIFIED") out.push("Security UNVERIFIED: no audit data, treat as unsafe");
+    if (security.mintAuthorityActive) out.push("Mint authority is active: supply can be inflated");
+    if (security.freezeAuthorityActive) out.push("Freeze authority is active: wallets can be frozen");
+    if (security.isHoneypot) out.push("Honeypot detected: tokens cannot be sold");
+    if (security.isOpenSource === false) out.push("Unverified contract: source code is not open/verified");
+    for (const [label, tax] of [["Buy", security.buyTax], ["Sell", security.sellTax]] as const) {
+      if (tax !== undefined && tax > 0.1) out.push(`${label} tax ${Math.round(tax * 1000) / 10}%`);
+    }
+    if (security.top10HolderPct !== undefined && security.top10HolderPct >= HOLDER_CONCENTRATION_WARN_PCT) {
+      out.push(`High top-10 holder concentration (${Math.round(security.top10HolderPct)}%)`);
+    } else if (security.topHolderPct !== undefined && security.topHolderPct >= 20) {
+      out.push(`Single wallet holds ${Math.round(security.topHolderPct)}% of supply`);
+    }
+  }
+  out.push(...wash.warnings);
+  const liq = pair.liquidity?.usd ?? 0;
+  if (liq < 10_000) out.push(`Thin liquidity ($${fmt(liq)})`);
+  const cap = pair.fdv ?? pair.marketCap;
+  if (cap && liq / cap < 0.01) out.push(`Liquidity is only ${((liq / cap) * 100).toFixed(2)}% of FDV: price can be moved easily`);
+  const age = pairAgeHours(pair, now);
+  if (age !== undefined && age < 1) out.push(`Very new pair (${Math.round(age * 60)} min old)`);
+  return [...new Set(out)];
+}
+
+export function computeAlphaScore(pair: DexPair, catalysts: Catalysts, security?: SecurityReport | null, now = Date.now()): AlphaScore {
   const liq = liquidityScore(pair);
   const pres = pressureScore(pair);
   const vel = velocityScore(pair);
   const soc = socialScore(pair, catalysts);
   const sec = securityAdjustment(security);
-  const raw = liq.points + pres.points + vel.points + soc.points + sec.delta;
+  const wash = analyzeWashTrading(pair);
+  const raw = liq.points + pres.points + vel.points + soc.points - wash.penalty + sec.delta;
   return {
     alphaScore: r1(clamp(raw, 0, 100)),
     rejected: sec.rejected,
@@ -142,9 +243,11 @@ export function computeAlphaScore(pair: DexPair, catalysts: Catalysts, security?
       pressure: pres.points,
       velocity: vel.points,
       social: soc.points,
+      manipulationPenalty: wash.penalty === 0 ? 0 : -wash.penalty,
       securityAdjustment: sec.delta,
     },
     reasons: [...liq.reasons, ...pres.reasons, ...vel.reasons, ...soc.reasons, ...sec.reasons],
+    warnings: buildWarnings(pair, wash, security, now),
   };
 }
 
@@ -163,6 +266,8 @@ export interface BreakoutSignal {
   priceChangeM5: number;
   /** 0-100 strength of the breakout (not a safety score). */
   breakoutScore: number;
+  /** Bot / wash-trading signals fired: such a surge is not counted as a breakout. */
+  washSuspected: boolean;
 }
 
 export interface BreakoutThresholds {
@@ -189,7 +294,9 @@ export function detectBreakout(pair: DexPair, t: Partial<BreakoutThresholds> = {
   const m5VolumeUsd = pair.volume?.m5 ?? 0;
   const priceChangeM5 = pair.priceChange?.m5 ?? 0;
 
+  const washSuspected = analyzeWashTrading(pair).suspected;
   const isBreakout =
+    !washSuspected &&
     acceleration >= th.minAcceleration &&
     (buyRatio5m ?? 0) >= th.minBuyRatio &&
     m5Txns >= th.minM5Txns &&
@@ -210,6 +317,7 @@ export function detectBreakout(pair: DexPair, t: Partial<BreakoutThresholds> = {
     m5Txns,
     priceChangeM5,
     breakoutScore: r1(clamp(accelPts + buyPts + depthPts + pricePts, 0, 100)),
+    washSuspected,
   };
 }
 

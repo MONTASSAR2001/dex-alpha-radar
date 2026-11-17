@@ -62,3 +62,36 @@ describe("end-to-end tools against live APIs", { skip }, () => {
     }
   });
 });
+
+describe("anti-wash filters and optional browser trending against live APIs", { skip }, () => {
+  const deps: ToolDeps = { dex: new DexScreenerClient(), security: new SecurityAuditor() };
+
+  it("scan_opportunities on base returns a well-formed (possibly small) payload", async () => {
+    const r = await scanOpportunities(deps, { chain: "base", limit: 5, minLiquidityUsd: 5_000, maxAgeHours: 24 * 60 });
+    assert.ok(Array.isArray(r.results));
+    for (const x of r.results) {
+      assert.equal(x.chain, "base");
+      assert.ok(["SAFE", "WARNING", "DANGER", "UNVERIFIED"].includes(x.security.status));
+    }
+  });
+
+  it("every live candidate carries a warnings array, trade-quality stats and a numeric penalty", async () => {
+    const r = await scanOpportunities(deps, { chain: "solana", limit: 6, minLiquidityUsd: 5_000, maxAgeHours: 24 * 30 });
+    assert.ok(r.results.length > 0);
+    for (const x of r.results) {
+      assert.ok(Array.isArray(x.warnings) && x.warnings.every((w) => typeof w === "string"));
+      assert.equal(typeof x.scoreBreakdown.manipulationPenalty, "number");
+      assert.ok(x.scoreBreakdown.manipulationPenalty <= 0 && x.scoreBreakdown.manipulationPenalty >= -20);
+      assert.equal(typeof x.tradeQuality.washSuspected, "boolean");
+      if (x.tradeQuality.washSuspected) assert.ok(x.warnings.some((w) => /bot volume|wash trading/.test(w)));
+    }
+  });
+
+  it("useBrowserTrending never breaks the scan: results come back with an honest trending status", { timeout: 120_000 }, async () => {
+    const r = await scanOpportunities(deps, { chain: "solana", limit: 3, useBrowserTrending: true, minLiquidityUsd: 5_000, maxAgeHours: 24 * 30 });
+    assert.ok(r.trending, "trending info is reported when requested");
+    assert.ok(["ok", "empty", "blocked", "unavailable", "error"].includes(r.trending.status));
+    assert.ok(r.results.length > 0, "API sources still produce results when the browser is blocked");
+    if (r.trending.status !== "ok") assert.ok(r.warnings.some((w) => w === r.trending!.message));
+  });
+});

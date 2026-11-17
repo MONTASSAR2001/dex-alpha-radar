@@ -90,6 +90,8 @@ export interface ScoreBreakdown {
   pressure: number;
   velocity: number;
   social: number;
+  /** Negative: anti-wash-trading / bot-volume penalty (0 to -20). */
+  manipulationPenalty: number;
   securityAdjustment: number;
 }
 
@@ -99,4 +101,6 @@ export interface AlphaScore {
   rejected: boolean;
   breakdown: ScoreBreakdown;
   reasons: string[];
+  /** Human-readable risk warnings (bot volume, concentration, unverified contract...). */
+  warnings: string[];
 }

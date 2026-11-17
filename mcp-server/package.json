@@ -1,6 +1,6 @@
 {
   "name": "dex-alpha-radar-mcp",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "description": "MCP server for dex-alpha-radar: DexScreener + RugCheck + GoPlus meme coin discovery and safety audits.",
   "author": "Montassar Zarai",
@@ -28,5 +28,8 @@
     "@types/node": "^20.19.43",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2"
+  },
+  "optionalDependencies": {
+    "playwright-core": "^1.65.1"
   }
 }
