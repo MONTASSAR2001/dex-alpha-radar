@@ -38,12 +38,48 @@ export interface RugCheckSummary {
 export interface RugCheckReport extends RugCheckSummary {
   mintAuthority?: string | null;
   freezeAuthority?: string | null;
-  token?: { mintAuthority?: string | null; freezeAuthority?: string | null };
+  token?: { mintAuthority?: string | null; freezeAuthority?: string | null; supply?: number; decimals?: number };
+  /** Wallet clusters RugCheck links to the deployer / snipers (transfers, shared funding). */
+  insiderNetworks?: { id?: string; size?: number; type?: string; tokenAmount?: number; currentHolding?: number; activeAccounts?: number }[] | null;
+  graphInsidersDetected?: number | null;
+  totalHolders?: number | null;
+  creator?: string | null;
+  /** Raw token units held by the creator. */
+  creatorBalance?: number | null;
+  detectedAt?: string | null;
   topHolders?: { pct?: number; address?: string; owner?: string; insider?: boolean }[] | null;
   rugged?: boolean;
   markets?: { pubkey?: string; lp?: { lpLockedPct?: number } }[];
   /** address -> label. AMM / LOCKER / CEX accounts are not "whales". */
   knownAccounts?: Record<string, { name?: string; type?: string }> | null;
+}
+
+export interface WalletHolder {
+  address?: string;
+  owner?: string;
+  pct: number;
+  insider: boolean;
+  isCreator: boolean;
+}
+
+/** Top holders that are real wallets: liquidity pools, lockers and exchanges are filtered out. */
+export function nonPoolHolders(report: RugCheckReport | null | undefined): { holders: WalletHolder[]; excluded: number } {
+  const skip = new Set<string>();
+  for (const [addr, info] of Object.entries(report?.knownAccounts ?? {})) if (info?.type !== "CREATOR") skip.add(addr);
+  for (const m of report?.markets ?? []) if (m.pubkey) skip.add(m.pubkey);
+  const creators = new Set<string>(report?.creator ? [report.creator] : []);
+  for (const [addr, info] of Object.entries(report?.knownAccounts ?? {})) if (info?.type === "CREATOR") creators.add(addr);
+  let excluded = 0;
+  const holders: WalletHolder[] = [];
+  for (const h of report?.topHolders ?? []) {
+    if (typeof h.pct !== "number") continue;
+    if ((h.address && skip.has(h.address)) || (h.owner && skip.has(h.owner))) {
+      excluded++;
+      continue;
+    }
+    holders.push({ address: h.address, owner: h.owner, pct: h.pct, insider: !!h.insider, isCreator: !!((h.owner && creators.has(h.owner)) || (h.address && creators.has(h.address))) });
+  }
+  return { holders: holders.sort((a, b) => b.pct - a.pct), excluded };
 }
 
 /**
@@ -169,6 +205,10 @@ export interface GoPlusTokenSecurity {
   transfer_pausable?: string;
   /** percent is a fraction (0.25 = 25%). */
   holders?: { address?: string; percent?: string; is_contract?: number | string; is_locked?: number | string }[] | null;
+  holder_count?: string;
+  /** Fractions (0.05 = 5%). */
+  creator_percent?: string;
+  owner_percent?: string;
   [k: string]: unknown;
 }
 
@@ -399,6 +439,34 @@ export class SecurityAuditor {
       return classifyGoPlus(chain, address, entry);
     } catch (e) {
       return unverified(chain, address, `GoPlus unavailable: ${errMsg(e)}`, "goplus");
+    }
+  }
+
+  /** Full RugCheck report (cached, shared with deep audits). Undefined when unavailable: callers must fail closed. */
+  async rugReport(mint: string): Promise<RugCheckReport | undefined> {
+    if (!/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(mint)) return undefined;
+    try {
+      return await this.rugGet<RugCheckReport>(`/v1/tokens/${encodeURIComponent(mint)}/report`);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /** Raw GoPlus token_security entry for an EVM contract (undefined when unavailable). */
+  async goplusEntry(chain: string, address: string): Promise<GoPlusTokenSecurity | undefined> {
+    const numeric = GOPLUS_CHAIN_IDS[chain.toLowerCase()];
+    if (numeric === undefined || !looksLikeEvmAddress(address)) return undefined;
+    await this.goplusBucket.acquire();
+    try {
+      const res = await fetchJson<{ code?: number; result?: Record<string, GoPlusTokenSecurity> | unknown[] }>(
+        `${this.goBase}/api/v1/token_security/${numeric}?contract_addresses=${address.toLowerCase()}`,
+        this.http,
+      );
+      if (res.code !== undefined && res.code !== 1) return undefined;
+      const result = res.result && !Array.isArray(res.result) ? res.result : {};
+      return result[address.toLowerCase()];
+    } catch {
+      return undefined;
     }
   }
 

@@ -24,23 +24,32 @@ export interface MockReply {
   throws?: Error;
 }
 
-export type Handler = (url: string, call: number) => MockReply | undefined;
+export type Handler = (url: string, call: number, body?: any) => MockReply | undefined;
 
 /** fetch mock that records calls. Unknown routes return 404. */
 export function mockFetch(handler: Handler, onCall?: (url: string) => void) {
   const calls: string[] = [];
-  const fn = (async (input: string | URL | Request) => {
+  /** Parsed JSON request bodies, parallel to `calls` (undefined for GETs). */
+  const bodies: unknown[] = [];
+  const fn = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     calls.push(url);
+    let body: unknown;
+    try {
+      body = typeof init?.body === "string" ? JSON.parse(init.body) : undefined;
+    } catch {
+      body = undefined;
+    }
+    bodies.push(body);
     onCall?.(url);
-    const reply = handler(url, calls.length) ?? { status: 404, body: { error: "not found" } };
+    const reply = handler(url, calls.length, body) ?? { status: 404, body: { error: "not found" } };
     if (reply.throws) throw reply.throws;
     return new Response(JSON.stringify(reply.body ?? {}), {
       status: reply.status ?? 200,
       headers: { "content-type": "application/json", ...reply.headers },
     });
   }) as typeof fetch;
-  return { fn, calls };
+  return { fn, calls, bodies };
 }
 
 export const NOW = 1_800_000_000_000;

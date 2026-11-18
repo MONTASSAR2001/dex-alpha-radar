@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import type { BrowserTrendingResult } from "../../mcp-server/src/browserFallback.js";
 import { DexScreenerClient } from "../../mcp-server/src/dexscreener.js";
 import { SecurityAuditor } from "../../mcp-server/src/security.js";
-import { scanOpportunities, type ToolDeps } from "../../mcp-server/src/tools.js";
+import { scanOpportunities, type ToolDeps } from "../../mcp-server/src/tools/index.js";
 import { fakeTime, makePair, mockFetch, NOW } from "../helpers.js";
 
 const REAL = ("ReaMint" + "1".repeat(40)).slice(0, 43);

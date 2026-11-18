@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { DexScreenerClient } from "../../mcp-server/src/dexscreener.js";
 import { SecurityAuditor } from "../../mcp-server/src/security.js";
-import { flagDuplicateSymbols, scanOpportunities } from "../../mcp-server/src/tools.js";
+import { flagDuplicateSymbols, scanOpportunities } from "../../mcp-server/src/tools/index.js";
 import { fakeTime, makePair, mockFetch, NOW } from "../helpers.js";
 
 describe("copycat ticker detection", () => {

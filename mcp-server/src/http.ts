@@ -21,6 +21,9 @@ export interface HttpOptions {
   /** First backoff delay; doubles each retry. */
   baseDelayMs?: number;
   headers?: Record<string, string>;
+  /** Default GET. POST bodies are sent as JSON. */
+  method?: "GET" | "POST";
+  body?: unknown;
 }
 
 const MAX_RETRY_AFTER_MS = 15_000;
@@ -50,7 +53,14 @@ export async function fetchJson<T>(url: string, opts: HttpOptions = {}): Promise
     let waitMs = base * 2 ** attempt + Math.floor(Math.random() * (base / 2));
     try {
       const res = await doFetch(url, {
-        headers: { accept: "application/json", "user-agent": "dex-alpha-radar/1.0", ...opts.headers },
+        method: opts.method ?? "GET",
+        body: opts.body === undefined ? undefined : JSON.stringify(opts.body),
+        headers: {
+          accept: "application/json",
+          "user-agent": "dex-alpha-radar/1.0",
+          ...(opts.body === undefined ? {} : { "content-type": "application/json" }),
+          ...opts.headers,
+        },
         signal: AbortSignal.timeout(timeoutMs),
       });
       if (res.ok) {

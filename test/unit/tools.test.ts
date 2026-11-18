@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { DexScreenerClient } from "../../mcp-server/src/dexscreener.js";
 import { createServer } from "../../mcp-server/src/index.js";
 import { SecurityAuditor } from "../../mcp-server/src/security.js";
-import { auditTokenSecurity, compareWatchlist, detectMomentumBreakouts, inspectToken, scanOpportunities, type ToolDeps } from "../../mcp-server/src/tools.js";
+import { auditTokenSecurity, compareWatchlist, detectMomentumBreakouts, inspectToken, scanOpportunities, type ToolDeps } from "../../mcp-server/src/tools/index.js";
 import { fakeTime, makePair, mockFetch, NOW } from "../helpers.js";
 
 const GOOD = "GoodMint1111111111111111111111111111111111";
@@ -212,7 +212,7 @@ describe("compare_watchlist", () => {
 });
 
 describe("MCP server wiring", () => {
-  it("registers exactly the six documented tools", async () => {
+  it("registers exactly the ten documented tools", async () => {
     const { Client } = await import("../../mcp-server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js");
     const { InMemoryTransport } = await import("../../mcp-server/node_modules/@modelcontextprotocol/sdk/dist/esm/inMemory.js");
     const { deps } = setup();
@@ -221,7 +221,18 @@ describe("MCP server wiring", () => {
     const [a, b] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(a), client.connect(b)]);
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((t) => t.name).sort(), ["audit_token_security", "compare_watchlist", "detect_fresh_births", "detect_momentum_breakouts", "inspect_token", "scan_opportunities"]);
+    assert.deepEqual(tools.map((t) => t.name).sort(), [
+      "analyze_trade_journal",
+      "analyze_whale_forensics",
+      "audit_token_security",
+      "compare_watchlist",
+      "detect_fresh_births",
+      "detect_momentum_breakouts",
+      "evaluate_narrative_pulse",
+      "inspect_token",
+      "scan_opportunities",
+      "simulate_or_prepare_trade",
+    ]);
     const res = await client.callTool({ name: "audit_token_security", arguments: { chain: "solana", address: GOOD } });
     const text = (res.content as { text: string }[])[0]!.text;
     assert.equal(JSON.parse(text).status, "SAFE");

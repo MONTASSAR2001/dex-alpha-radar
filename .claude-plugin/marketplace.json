@@ -11,7 +11,7 @@
       "name": "dex-alpha-radar",
       "source": "./",
       "description": "Real-time meme coin opportunity discovery, momentum scoring and automated anti-rug auditing via DexScreener, RugCheck and GoPlus Security.",
-      "version": "1.1.0",
+      "version": "1.2.0",
       "author": { "name": "Montassar Zarai", "url": "https://github.com/MONTASSAR2001" },
       "homepage": "https://github.com/MONTASSAR2001/dex-alpha-radar",
       "repository": "https://github.com/MONTASSAR2001/dex-alpha-radar",

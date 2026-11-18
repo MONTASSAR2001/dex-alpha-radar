@@ -15,10 +15,14 @@ import {
   inspectToken,
   scanOpportunities,
   type ToolDeps,
-} from "./tools.js";
+} from "./tools/index.js";
+import { evaluateNarrativePulse } from "./tools/narrative-pulse.js";
+import { simulateOrPrepareTrade, startPaperMonitor } from "./tools/paper-phantom-trader.js";
+import { analyzeTradeJournal } from "./tools/trade-journal.js";
+import { analyzeWhaleForensics } from "./tools/whale-forensics.js";
 
 export const SERVER_NAME = "dex-alpha-radar";
-export const SERVER_VERSION = "1.1.0";
+export const SERVER_VERSION = "1.2.0";
 
 const chainParam = z
   .string()
@@ -38,7 +42,10 @@ async function run(fn: () => Promise<Payload>) {
   }
 }
 
-export function createServer(deps: ToolDeps = { dex: new DexScreenerClient(), security: new SecurityAuditor(), gecko: new GeckoTerminalClient() }): McpServer {
+/** Default dependencies; the same instance backs the tools and the background paper monitor (one ledger, one cache). */
+const monitorDeps: ToolDeps = { dex: new DexScreenerClient(), security: new SecurityAuditor(), gecko: new GeckoTerminalClient() };
+
+export function createServer(deps: ToolDeps = monitorDeps): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
   const annotations = { readOnlyHint: true, idempotentHint: true, openWorldHint: true } as const;
 
@@ -155,11 +162,89 @@ export function createServer(deps: ToolDeps = { dex: new DexScreenerClient(), se
     (args) => run(() => compareWatchlist(deps, args)),
   );
 
+  // ---- forensics, narrative, trading, journal ----
+
+  server.registerTool(
+    "analyze_whale_forensics",
+    {
+      title: "Analyze whale and bundle forensics",
+      description:
+        "Holder forensics for a token contract: top-holder concentration (liquidity pools, lockers and exchanges excluded), creator share, insider wallet networks and early-distribution patterns (RugCheck wallet graph on Solana; GoPlus holders on EVM) plus DexScreener transaction velocity. Returns BUNDLE_DETECTED, CLEAN_DISTRIBUTION or INSUFFICIENT_DATA (fail-closed) and a Holder Safety Score 0-100. EVM chains get concentration only; bundle detection is Solana-only.",
+      inputSchema: {
+        address: z.string().min(20).max(66).describe("Token mint (Solana) or contract address (EVM)."),
+        chain: chainParam.optional().describe('Defaults to "solana" for base58 addresses.'),
+      },
+      annotations,
+    },
+    (args) => run(() => analyzeWhaleForensics(deps, args)),
+  );
+
+  server.registerTool(
+    "evaluate_narrative_pulse",
+    {
+      title: "Evaluate narrative pulse",
+      description:
+        "Scores a token's narrative: market-attention momentum (0-100), copycat risk against DexScreener's current trending tokens and same-ticker pools (late copycats are flagged HIGH), and social presence (website, X, Telegram: format-checked links from the DexScreener listing, not independently verified accounts). Does not measure tweet or chat volume.",
+      inputSchema: {
+        query: z.string().min(1).max(100).describe("Token symbol, name, or contract address."),
+        chain: chainParam.optional().describe("Optionally restrict to one chain."),
+      },
+      annotations,
+    },
+    (args) => run(() => evaluateNarrativePulse(deps, args)),
+  );
+
+  server.registerTool(
+    "simulate_or_prepare_trade",
+    {
+      title: "Simulate or prepare a trade",
+      description:
+        "Paper-trades by default (paperMode=true): simulates fills with live DexScreener + Jupiter quotes, 2% slippage and Solana priority fees, and records positions in ~/.dex-alpha-radar/trades.json. Entry rules (age <= 5 min, SAFE security, Alpha >= 70, clean holder distribution, no copycat) and the Trailing Profit Guard (break-even at +50%, take profit +100%, stop loss -30%, emergency exit if liquidity falls > 20%) are enforced. actions: buy | sell | monitor | positions. With paperMode=false it returns an UNSIGNED Jupiter swap transaction for your wallet (Phantom) to sign; optional burner-wallet auto-execution needs autoExecute=true plus server-side env guardrails and never accepts a private key as a parameter.",
+      inputSchema: {
+        action: z.enum(["buy", "sell", "monitor", "positions"]).describe("buy opens a position, sell closes one, monitor applies the guard to open positions, positions lists the ledger."),
+        chain: chainParam.optional().describe('Default "solana". Live trades are Solana-only.'),
+        tokenAddress: z.string().min(20).max(66).optional().describe("Token mint/contract (buy; sell if no positionId)."),
+        positionId: z.string().min(1).max(40).optional().describe("Ledger position id (sell)."),
+        sizeUsd: z.number().positive().max(100000).optional().describe("USD to swap into the token (buy). Default 25."),
+        paperMode: z.boolean().default(true).optional().describe("Default true: simulation only. false prepares a real swap."),
+        slippageBps: z.number().int().min(1).max(2000).optional().describe("Slippage in basis points. Default 200 (2%)."),
+        priorityFeeLamports: z.number().int().min(0).max(100000000).optional().describe("Solana priority fee in lamports. Default 500000."),
+        enforceEntryRules: z.boolean().optional().describe("Paper only: false records an experimental trade that bypasses the entry gate (flagged in the journal). Ignored/forbidden for live trades."),
+        walletPublicKey: z.string().min(32).max(44).optional().describe("Live: the Solana public key (Phantom) that will sign. Defaults to the burner wallet when configured."),
+        autoExecute: z.boolean().default(false).optional().describe("Live: sign and send with the server's burner key. Requires DEX_ALPHA_ALLOW_LIVE_EXECUTION=true, SOLANA_BURNER_PRIVATE_KEY, MAX_TRADE_USD and DAILY_LOSS_LIMIT_USD in the server environment."),
+        sellPercent: z.number().gt(0).max(100).optional().describe("Live unsigned sell: percent of the wallet balance (default 100)."),
+        mode: z.enum(["paper", "live", "all"]).optional().describe("monitor/positions: which ledger entries (default paper)."),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+    },
+    (args) => run(() => simulateOrPrepareTrade(deps, args)),
+  );
+
+  server.registerTool(
+    "analyze_trade_journal",
+    {
+      title: "Analyze the trade journal",
+      description:
+        "Reads the local trade ledger and reports win rate, net and average PnL %, profit factor, the best-performing chain and launch-age window, exit-reason breakdown, and concrete threshold optimisations (Alpha minimum, entry age window, take-profit, stop-loss, break-even trigger) from in-sample replays. Needs a minimum sample (default 5 closed trades) before suggesting anything; suggestions are never applied automatically.",
+      inputSchema: {
+        mode: z.enum(["paper", "live", "all"]).optional().describe("Which trades (default paper)."),
+        since: z.string().max(40).optional().describe("ISO date: only trades opened on or after it."),
+        minSample: z.number().int().min(1).max(500).optional().describe("Minimum closed trades for a meaningful suggestion (default 5)."),
+        onlyRuleCompliant: z.boolean().optional().describe("Exclude trades that bypassed the entry rules."),
+      },
+      annotations: { readOnlyHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    (args) => run(() => analyzeTradeJournal(deps, args)),
+  );
+
   return server;
 }
 
 async function main(): Promise<void> {
   const server = createServer();
+  // Paper-position guard: checks open PAPER positions on a timer. Live positions are never auto-sold from here.
+  const sec = Number(process.env.DEX_ALPHA_MONITOR_INTERVAL_SEC ?? 30);
+  if (Number.isFinite(sec) && sec > 0) startPaperMonitor(monitorDeps, Math.max(5, sec) * 1000, (e) => console.error("[paper monitor]", e instanceof Error ? e.message : e));
   await server.connect(new StdioServerTransport());
   console.error(`${SERVER_NAME} v${SERVER_VERSION} MCP server running on stdio`);
 }

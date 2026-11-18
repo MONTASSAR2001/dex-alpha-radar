@@ -3,7 +3,7 @@ import { describe, it } from "node:test";
 import { DexScreenerClient } from "../../mcp-server/src/dexscreener.js";
 import { GeckoTerminalClient, parseNewPools } from "../../mcp-server/src/geckoterminal.js";
 import { SecurityAuditor } from "../../mcp-server/src/security.js";
-import { computeBirthVelocity, detectFreshBirths, explorerLink, tradeLink, type ToolDeps } from "../../mcp-server/src/tools.js";
+import { computeBirthVelocity, detectFreshBirths, explorerLink, tradeLink, type ToolDeps } from "../../mcp-server/src/tools/index.js";
 import { fakeTime, makePair, mockFetch, NOW } from "../helpers.js";
 
 const MIN0 = "Min0Mint111111111111111111111111111111111111"; // 40 s old, only on GeckoTerminal (DexScreener has no pair yet)

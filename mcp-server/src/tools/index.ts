@@ -1,11 +1,14 @@
-import { looksLikeAddress, looksLikeEvmAddress, looksLikeSolanaAddress, normalizeAddress, normalizeChain, tokenKey } from "./chains.js";
-import { bestPairPerToken, dexUrl, type DexScreenerClient } from "./dexscreener.js";
-import { mapLimit } from "./limiter.js";
-import { fetchBrowserTrending, type BrowserTrendingOptions, type BrowserTrendingResult } from "./browserFallback.js";
-import { analyzeWashTrading, buyRatio, computeAlphaScore, detectBreakout, pairAgeHours, type BreakoutSignal } from "./scoring.js";
-import { unverified, type SecurityAuditor } from "./security.js";
-import { GECKO_NETWORKS, geckoPoolToPair, type GeckoPool, type GeckoTerminalClient } from "./geckoterminal.js";
-import type { AlphaScore, Catalysts, DexPair, DexTokenSignal, SecurityReport } from "./types.js";
+import { looksLikeAddress, looksLikeEvmAddress, looksLikeSolanaAddress, normalizeAddress, normalizeChain, tokenKey } from "../chains.js";
+import { bestPairPerToken, dexUrl, type DexScreenerClient } from "../dexscreener.js";
+import { mapLimit } from "../limiter.js";
+import { fetchBrowserTrending, type BrowserTrendingOptions, type BrowserTrendingResult } from "../browserFallback.js";
+import { analyzeWashTrading, buyRatio, computeAlphaScore, detectBreakout, pairAgeHours, type BreakoutSignal } from "../scoring.js";
+import { unverified, type SecurityAuditor } from "../security.js";
+import { GECKO_NETWORKS, geckoPoolToPair, type GeckoPool, type GeckoTerminalClient } from "../geckoterminal.js";
+import type { AlphaScore, Catalysts, DexPair, DexTokenSignal, SecurityReport } from "../types.js";
+import type { JupiterClient } from "../trading/jupiter.js";
+import type { TradeLedger } from "../trading/ledger.js";
+import type { SolanaRpc } from "../trading/solana.js";
 
 export interface ToolDeps {
   dex: DexScreenerClient;
@@ -15,6 +18,12 @@ export interface ToolDeps {
   now?: () => number;
   /** Browser trending source (optional; defaults to the Playwright implementation). */
   trending?: (opts: BrowserTrendingOptions) => Promise<BrowserTrendingResult>;
+  // ---- paper / Phantom trading (created lazily with defaults when absent) ----
+  jupiter?: JupiterClient;
+  ledger?: TradeLedger;
+  rpc?: SolanaRpc;
+  /** Environment used for guardrails and secrets. Defaults to process.env. */
+  env?: NodeJS.ProcessEnv;
 }
 
 export const DISCLAIMER =
@@ -342,11 +351,16 @@ export interface InspectParams {
   chain?: string;
 }
 
-export async function inspectToken(deps: ToolDeps, p: InspectParams) {
-  const now = (deps.now ?? Date.now)();
-  const query = p.query.trim();
+const liqOf = (list: DexPair[]) => list.reduce((s, x) => s + (x.liquidity?.usd ?? 0), 0);
+
+/**
+ * Resolves a symbol / name / contract address to DexScreener pools grouped by token,
+ * most liquid token first. Returns an empty `tokens` array when nothing matches.
+ */
+export async function resolveTokenMatches(deps: ToolDeps, rawQuery: string, chainParam?: string): Promise<{ isAddress: boolean; tokens: DexPair[][] }> {
+  const query = rawQuery.trim();
   if (!query) throw new Error("query must not be empty");
-  const chain = p.chain ? normalizeChain(p.chain) : undefined;
+  const chain = chainParam ? normalizeChain(chainParam) : undefined;
 
   let pairs = await deps.dex.search(query.replace(/^\$/, ""));
   if (chain && chain !== "all") pairs = pairs.filter((x) => x.chainId.toLowerCase() === chain);
@@ -361,16 +375,25 @@ export async function inspectToken(deps: ToolDeps, p: InspectParams) {
     const exact = pairs.filter((x) => x.baseToken.symbol.toLowerCase() === q || x.baseToken.name.toLowerCase() === q);
     matches = exact.length ? exact : pairs.filter((x) => x.baseToken.symbol.toLowerCase().includes(q) || x.baseToken.name.toLowerCase().includes(q));
   }
-  if (!matches.length) {
-    return { found: false as const, query, message: `No DexScreener pools found for "${query}"${chain ? ` on ${chain}` : ""}.`, disclaimer: DISCLAIMER };
-  }
-
   // Group pools by token; the most liquid token is the primary match.
   const byToken = new Map<string, DexPair[]>();
   for (const m of matches) byToken.set(secKey(m), [...(byToken.get(secKey(m)) ?? []), m]);
-  const liqOf = (list: DexPair[]) => list.reduce((s, x) => s + (x.liquidity?.usd ?? 0), 0);
   const tokens = [...byToken.values()].sort((a, b) => liqOf(b) - liqOf(a));
-  const primaryPools = tokens[0]!.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0));
+  for (const t of tokens) t.sort((a, b) => (b.liquidity?.usd ?? 0) - (a.liquidity?.usd ?? 0));
+  return { isAddress, tokens };
+}
+
+export async function inspectToken(deps: ToolDeps, p: InspectParams) {
+  const now = (deps.now ?? Date.now)();
+  const query = p.query.trim();
+  if (!query) throw new Error("query must not be empty");
+  const chain = p.chain ? normalizeChain(p.chain) : undefined;
+
+  const { isAddress, tokens } = await resolveTokenMatches(deps, query, p.chain);
+  if (!tokens.length) {
+    return { found: false as const, query, message: `No DexScreener pools found for "${query}"${chain ? ` on ${chain}` : ""}.`, disclaimer: DISCLAIMER };
+  }
+  const primaryPools = tokens[0]!;
   const best = primaryPools[0]!;
 
   let cto = false;

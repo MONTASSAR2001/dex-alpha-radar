@@ -1,6 +1,6 @@
 {
   "name": "dex-alpha-radar",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Universal AI agent skill and MCP server: real-time meme coin discovery, momentum scoring and anti-rug auditing via DexScreener, RugCheck and GoPlus.",
   "author": "Montassar Zarai",
   "license": "MIT",

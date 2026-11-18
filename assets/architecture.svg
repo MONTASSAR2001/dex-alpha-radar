@@ -1,4 +1,4 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 570" width="1000" height="570" role="img" aria-labelledby="t d" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 596" width="1000" height="596" role="img" aria-labelledby="t d" font-family="-apple-system, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif">
   <title id="t">dex-alpha-radar architecture</title>
   <desc id="d">AI agents connect over stdio MCP to the dex-alpha-radar server, which queries DexScreener, RugCheck and GoPlus Security.</desc>
   <defs>
@@ -14,14 +14,14 @@
     </marker>
   </defs>
 
-  <rect width="1000" height="570" rx="16" fill="url(#bg)"/>
-  <rect x="0.5" y="0.5" width="999" height="569" rx="16" fill="none" stroke="#30363d"/>
+  <rect width="1000" height="596" rx="16" fill="url(#bg)"/>
+  <rect x="0.5" y="0.5" width="999" height="595" rx="16" fill="none" stroke="#30363d"/>
 
   <text x="500" y="40" text-anchor="middle" font-size="22" font-weight="700" fill="#e6edf3">dex-alpha-radar</text>
   <text x="500" y="60" text-anchor="middle" font-size="12" fill="#8b949e">Meme coin discovery, momentum scoring and anti-rug auditing · by Montassar Zarai</text>
 
   <!-- Agents -->
-  <rect x="30" y="80" width="200" height="384" rx="12" fill="#161b22" stroke="#30363d"/>
+  <rect x="30" y="80" width="200" height="404" rx="12" fill="#161b22" stroke="#30363d"/>
   <text x="130" y="106" text-anchor="middle" font-size="12" font-weight="700" letter-spacing="1.5" fill="#8b949e">AI AGENTS</text>
   <g font-size="13" fill="#e6edf3" text-anchor="middle">
     <rect x="50" y="122" width="160" height="38" rx="8" fill="#21262d" stroke="#388bfd"/><text x="130" y="146">Claude Code</text>
@@ -31,10 +31,10 @@
     <rect x="50" y="322" width="160" height="38" rx="8" fill="#21262d" stroke="#388bfd"/><text x="130" y="346">Gemini CLI</text>
     <rect x="50" y="372" width="160" height="38" rx="8" fill="#21262d" stroke="#388bfd"/><text x="130" y="396">npx skills add</text>
   </g>
-  <text x="130" y="436" text-anchor="middle" font-size="11" fill="#8b949e">SKILL.md + MCP tools</text>
+  <text x="130" y="456" text-anchor="middle" font-size="11" fill="#8b949e">SKILL.md + MCP tools</text>
 
   <!-- Server -->
-  <rect x="290" y="80" width="420" height="384" rx="12" fill="#161b22" stroke="#388bfd" stroke-width="1.5"/>
+  <rect x="290" y="80" width="420" height="404" rx="12" fill="#161b22" stroke="#388bfd" stroke-width="1.5"/>
   <text x="500" y="106" text-anchor="middle" font-size="12" font-weight="700" letter-spacing="1.5" fill="#58a6ff">DEX-ALPHA-RADAR</text>
 
   <rect x="310" y="120" width="380" height="40" rx="8" fill="#21262d" stroke="#30363d"/>
@@ -43,39 +43,44 @@
   <rect x="310" y="172" width="380" height="40" rx="8" fill="#21262d" stroke="#30363d"/>
   <text x="500" y="197" text-anchor="middle" font-size="13" fill="#e6edf3">mcp-launch.mjs · auto install + build, then stdio</text>
 
-  <rect x="310" y="224" width="380" height="104" rx="8" fill="#0d1117" stroke="#3fb950"/>
-  <text x="500" y="244" text-anchor="middle" font-size="12" font-weight="700" fill="#3fb950">MCP SERVER · 5 TOOLS</text>
-  <g font-size="12" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
+  <rect x="310" y="224" width="380" height="126" rx="8" fill="#0d1117" stroke="#3fb950"/>
+  <text x="500" y="244" text-anchor="middle" font-size="12" font-weight="700" fill="#3fb950">MCP SERVER · 10 TOOLS</text>
+  <g font-size="11" fill="#e6edf3" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace">
     <text x="322" y="266">scan_opportunities</text>
-    <text x="322" y="286">inspect_token</text>
-    <text x="322" y="306">audit_token_security</text>
-    <text x="480" y="266">detect_momentum_breakouts</text>
-    <text x="480" y="286">compare_watchlist</text>
+    <text x="322" y="284">inspect_token</text>
+    <text x="322" y="302">audit_token_security</text>
+    <text x="322" y="320">detect_momentum_breakouts</text>
+    <text x="322" y="338">compare_watchlist</text>
+    <text x="500" y="266">detect_fresh_births</text>
+    <text x="500" y="284">analyze_whale_forensics</text>
+    <text x="500" y="302">evaluate_narrative_pulse</text>
+    <text x="500" y="320">simulate_or_prepare_trade</text>
+    <text x="500" y="338">analyze_trade_journal</text>
   </g>
 
   <g font-size="12" text-anchor="middle">
-    <rect x="310" y="342" width="120" height="86" rx="8" fill="#21262d" stroke="#30363d"/>
-    <text x="370" y="364" font-weight="700" fill="#e6edf3">dexscreener.ts</text>
-    <text x="370" y="384" fill="#8b949e">token buckets</text>
-    <text x="370" y="400" fill="#8b949e">12s TTL cache</text>
-    <text x="370" y="416" fill="#8b949e">429/5xx backoff</text>
+    <rect x="310" y="362" width="120" height="86" rx="8" fill="#21262d" stroke="#30363d"/>
+    <text x="370" y="384" font-weight="700" fill="#e6edf3">dexscreener.ts</text>
+    <text x="370" y="404" fill="#8b949e">token buckets</text>
+    <text x="370" y="420" fill="#8b949e">12s TTL cache</text>
+    <text x="370" y="436" fill="#8b949e">429/5xx backoff</text>
 
-    <rect x="440" y="342" width="120" height="86" rx="8" fill="#21262d" stroke="#30363d"/>
-    <text x="500" y="364" font-weight="700" fill="#e6edf3">security.ts</text>
-    <text x="500" y="384" fill="#8b949e">SAFE / WARNING</text>
-    <text x="500" y="400" fill="#8b949e">DANGER</text>
-    <text x="500" y="416" fill="#f0883e">fail-closed</text>
+    <rect x="440" y="362" width="120" height="86" rx="8" fill="#21262d" stroke="#30363d"/>
+    <text x="500" y="384" font-weight="700" fill="#e6edf3">security.ts</text>
+    <text x="500" y="404" fill="#8b949e">SAFE / WARNING</text>
+    <text x="500" y="420" fill="#8b949e">DANGER</text>
+    <text x="500" y="436" fill="#f0883e">fail-closed</text>
 
-    <rect x="570" y="342" width="120" height="86" rx="8" fill="#21262d" stroke="#30363d"/>
-    <text x="630" y="364" font-weight="700" fill="#e6edf3">scoring.ts</text>
-    <text x="630" y="384" fill="#8b949e">Alpha 0-100</text>
-    <text x="630" y="400" fill="#8b949e">breakout detect</text>
-    <text x="630" y="416" fill="#8b949e">security veto</text>
+    <rect x="570" y="362" width="120" height="86" rx="8" fill="#21262d" stroke="#30363d"/>
+    <text x="630" y="384" font-weight="700" fill="#e6edf3">scoring.ts</text>
+    <text x="630" y="404" fill="#8b949e">Alpha 0-100</text>
+    <text x="630" y="420" fill="#8b949e">breakout detect</text>
+    <text x="630" y="436" fill="#8b949e">security veto</text>
   </g>
-  <text x="500" y="442" text-anchor="middle" font-size="10" fill="#8b949e">Node 20+ · native fetch · TypeScript · zero API keys</text>
+  <text x="500" y="462" text-anchor="middle" font-size="10" fill="#8b949e">Node 20+ · native fetch · TypeScript · zero API keys</text>
 
   <!-- External -->
-  <rect x="770" y="80" width="200" height="384" rx="12" fill="#161b22" stroke="#30363d"/>
+  <rect x="770" y="80" width="200" height="404" rx="12" fill="#161b22" stroke="#30363d"/>
   <text x="870" y="106" text-anchor="middle" font-size="12" font-weight="700" letter-spacing="1.5" fill="#8b949e">LIVE DATA SOURCES</text>
 
   <rect x="790" y="122" width="160" height="116" rx="8" fill="#21262d" stroke="#bc8cff"/>
@@ -106,16 +111,16 @@
   <line x1="710" y1="385" x2="768" y2="385" stroke="#3fb950" stroke-width="2" marker-end="url(#arrowG)"/>
 
   <!-- Pipeline -->
-  <rect x="30" y="484" width="940" height="76" rx="12" fill="#161b22" stroke="#30363d"/>
+  <rect x="30" y="504" width="940" height="76" rx="12" fill="#161b22" stroke="#30363d"/>
   <g font-size="13" text-anchor="middle" fill="#e6edf3" font-weight="600">
-    <rect x="60" y="504" width="150" height="32" rx="16" fill="#0d1117" stroke="#bc8cff"/><text x="135" y="525">1 · Discover</text>
-    <rect x="290" y="504" width="150" height="32" rx="16" fill="#0d1117" stroke="#388bfd"/><text x="365" y="525">2 · Batch + filter</text>
-    <rect x="520" y="504" width="150" height="32" rx="16" fill="#0d1117" stroke="#f0883e"/><text x="595" y="525">3 · Audit</text>
-    <rect x="750" y="504" width="200" height="32" rx="16" fill="#0d1117" stroke="#3fb950"/><text x="850" y="525">4 · Score + rank</text>
+    <rect x="60" y="524" width="150" height="32" rx="16" fill="#0d1117" stroke="#bc8cff"/><text x="135" y="545">1 · Discover</text>
+    <rect x="290" y="524" width="150" height="32" rx="16" fill="#0d1117" stroke="#388bfd"/><text x="365" y="545">2 · Batch + filter</text>
+    <rect x="520" y="524" width="150" height="32" rx="16" fill="#0d1117" stroke="#f0883e"/><text x="595" y="545">3 · Audit</text>
+    <rect x="750" y="524" width="200" height="32" rx="16" fill="#0d1117" stroke="#3fb950"/><text x="850" y="545">4 · Score + rank</text>
   </g>
   <g stroke="#8b949e" stroke-width="1.5" fill="none">
-    <path d="M214 520 H286"/><path d="M444 520 H516"/><path d="M674 520 H746"/>
+    <path d="M214 540 H286"/><path d="M444 540 H516"/><path d="M674 540 H746"/>
   </g>
-  <g fill="#8b949e"><path d="M286 516 l6 4 l-6 4z"/><path d="M516 516 l6 4 l-6 4z"/><path d="M746 516 l6 4 l-6 4z"/></g>
-  <text x="500" y="550" text-anchor="middle" font-size="10" fill="#8b949e">Research tooling only. Not financial advice.</text>
+  <g fill="#8b949e"><path d="M286 536 l6 4 l-6 4z"/><path d="M516 536 l6 4 l-6 4z"/><path d="M746 536 l6 4 l-6 4z"/></g>
+  <text x="500" y="570" text-anchor="middle" font-size="10" fill="#8b949e">Research tooling only. Not financial advice.</text>
 </svg>

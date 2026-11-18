@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 /**
- * Live end-to-end demo: drives all five MCP tools through the real stdio launcher
+ * Live end-to-end demo: drives the MCP tools through the real stdio launcher
  * (the exact path an agent uses) against live DexScreener / RugCheck / GoPlus data.
  *
  *   node scripts/demo.mjs [--trending] [--json]
  */
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 
@@ -14,7 +16,14 @@ const { Client } = await sdk("client/index.js");
 const { StdioClientTransport } = await sdk("client/stdio.js");
 
 const args = new Set(process.argv.slice(2));
-const transport = new StdioClientTransport({ command: process.execPath, args: [join(root, "scripts/mcp-launch.mjs")], stderr: "pipe" });
+// The demo only ever paper-trades, in a fresh throwaway ledger: it never touches ~/.dex-alpha-radar or any wallet.
+const demoHome = mkdtempSync(join(tmpdir(), "dex-alpha-demo-"));
+const transport = new StdioClientTransport({
+  command: process.execPath,
+  args: [join(root, "scripts/mcp-launch.mjs")],
+  stderr: "pipe",
+  env: { ...process.env, DEX_ALPHA_RADAR_HOME: demoHome, DEX_ALPHA_MONITOR_INTERVAL_SEC: "0" },
+});
 const client = new Client({ name: "dex-alpha-radar-demo", version: "1.0.0" });
 await client.connect(transport);
 
@@ -164,6 +173,90 @@ try {
     console.log(warningsOf(r.ranking));
   });
 
+  if (pick) {
+    await step(`7. analyze_whale_forensics  ${pick.chain} ${short(pick.tokenAddress)}  ($${pick.symbol})`, async () => {
+      const r = await call("analyze_whale_forensics", { address: pick.tokenAddress, chain: pick.chain });
+      console.log(
+        table(
+          ["Metric", "Value"],
+          [
+            ["Verdict", r.verdict],
+            ["Holder Safety Score", r.holderSafetyScore === null ? "n/a" : `${r.holderSafetyScore}/100 (${r.band})`],
+            ["Top 1 / 5 / 10 wallets", `${r.concentration.top1Pct ?? "n/a"}% / ${r.concentration.top5Pct ?? "n/a"}% / ${r.concentration.top10Pct ?? "n/a"}%`],
+            ["Creator holds", `${r.concentration.creatorPct ?? "n/a"}%`],
+            ["Insider networks / held / graph wallets", `${r.insiders.networks.length} / ${r.insiders.networkHoldingPct ?? "n/a"}% / ${r.insiders.graphInsidersDetected ?? "n/a"}`],
+            ["Buys per holder (24h)", r.velocity.buysPerHolder24h ?? "n/a"],
+            ["Why", r.reasons.join(" · ")],
+          ],
+        ),
+      );
+      console.log(`Warnings: ${r.warnings.join(" · ") || "none"}`);
+    });
+
+    await step(`8. evaluate_narrative_pulse  $${pick.symbol}`, async () => {
+      const r = await call("evaluate_narrative_pulse", { query: pick.tokenAddress, chain: pick.chain });
+      if (!r.found) throw new Error(r.message);
+      console.log(
+        table(
+          ["Check", "Result"],
+          [
+            ["Verdict", r.verdict],
+            ["Attention momentum", `${r.momentum.score}/100  ${JSON.stringify(r.momentum.components)}`],
+            ["Copycat risk", `${r.copycat.risk}: ${r.copycat.summary} (compared against ${r.copycat.comparedAgainst} tokens)`],
+            ["Social (website / X / Telegram)", `${r.social.website.listed ? "yes" : "no"} / ${r.social.x.listed ? "yes" : "no"} / ${r.social.telegram.listed ? "yes" : "no"}  score ${r.social.score}/100`],
+            ["Theme peers", r.theme.peers.map((p) => `${p.keyword}:${p.trendingPeers}`).join(", ") || "none"],
+          ],
+        ),
+      );
+      console.log(`Warnings: ${r.warnings.join(" · ") || "none"}`);
+    });
+
+    await step("9. simulate_or_prepare_trade  strict gate, then an experimental PAPER trade", async () => {
+      const gate = await call("simulate_or_prepare_trade", { action: "buy", tokenAddress: pick.tokenAddress, chain: pick.chain, sizeUsd: 25 });
+      if (gate.blocked) {
+        console.log("Strict entry gate: BLOCKED (as designed: not a <= 5 minute, SAFE, clean, original launch)");
+        console.log(table(["Rule", "Actual", "Required", "Pass"], gate.checks.map((c) => [c.rule, c.actual, c.required, c.passed])));
+      } else console.log(`Strict gate PASSED: opened paper position ${gate.position.id}`);
+      if (pick.chain !== "solana") {
+        console.log("(experimental paper trade skipped: the Jupiter fill path is Solana-only)");
+        return;
+      }
+      const t = gate.executed ? gate : await call("simulate_or_prepare_trade", { action: "buy", tokenAddress: pick.tokenAddress, chain: pick.chain, sizeUsd: 25, enforceEntryRules: false });
+      if (!t.executed) return console.log(`Trade not opened: ${t.reason ?? JSON.stringify(t).slice(0, 200)}`);
+      console.log(
+        table(
+          ["Item", "Value"],
+          [
+            ["Mode", "PAPER (no funds)"],
+            ["Market price -> fill price", `${t.fill.refPriceUsd} -> ${t.fill.fillPriceUsd}  (${t.fill.effectiveSlippageVsMarketPct}% over market, source ${t.fill.source})`],
+            ["Entry fees", `$${t.fill.entryFeesUsd}`],
+            ["Tokens", t.position.tokenQty.toFixed(2)],
+            ["Guard", `SL ${t.guard.stopLossPct}% | break-even at +${t.guard.breakEvenAtGainPct}% | TP +${t.guard.takeProfitPct}% | emergency if liquidity -${t.guard.emergencyIfLiquidityDropsPct}%`],
+            ["Flagged experimental", t.position.entry.rulesEnforced ? "no" : "yes (bypassed the gate)"],
+          ],
+        ),
+      );
+      const m = await call("simulate_or_prepare_trade", { action: "monitor" });
+      console.log(`monitor: checked ${m.checked}, closed ${m.closed.length}, holding ${m.holding.length}${m.holding[0] ? ` (pnl ${m.holding[0].pnlPct}%, stop ${m.holding[0].stopPct}%)` : ""}`);
+      if (m.holding[0]) {
+        const sold = await call("simulate_or_prepare_trade", { action: "sell", positionId: t.position.id });
+        console.log(`sell: exit ${sold.position.exit.reason} at ${sold.fill.fillPriceUsd}; round-trip PnL ${sold.position.pnlPct}% ($${sold.position.pnlUsd}) after slippage and fees`);
+      }
+    });
+
+    await step("10. analyze_trade_journal", async () => {
+      const j = await call("analyze_trade_journal", { minSample: 1 });
+      if (!j.summary) return console.log(j.message);
+      console.log(
+        table(
+          ["Trades", "Win rate", "Net PnL", "Avg PnL", "Profit factor", "Best chain", "Best launch-age window", "Rule-bypassed"],
+          [[j.closedTrades, `${j.summary.winRatePct}%`, `$${j.summary.netPnlUsd} (${j.summary.netPnlPct}%)`, `${j.summary.avgPnlPct}%`, j.summary.profitFactor ?? "n/a", j.bestChain?.chain ?? "n/a", j.bestLaunchAgeWindow?.window ?? "n/a", j.ruleBypassedTrades]],
+        ),
+      );
+      console.log(j.optimizationNote);
+    });
+  }
+
   section("Timings");
   console.log(table(["Tool", "Arg", "ms", "result"], timings));
 } finally {
@@ -173,4 +266,4 @@ if (failed) {
   console.error(`\n${failed} step(s) failed`);
   process.exit(1);
 }
-console.log("\nAll 5 tools executed end-to-end against live data.");
+console.log(`\nAll tools executed end-to-end against live data (trading in paper mode only; throwaway ledger: ${demoHome}).`);
