@@ -212,7 +212,7 @@ describe("compare_watchlist", () => {
 });
 
 describe("MCP server wiring", () => {
-  it("registers exactly the five documented tools", async () => {
+  it("registers exactly the six documented tools", async () => {
     const { Client } = await import("../../mcp-server/node_modules/@modelcontextprotocol/sdk/dist/esm/client/index.js");
     const { InMemoryTransport } = await import("../../mcp-server/node_modules/@modelcontextprotocol/sdk/dist/esm/inMemory.js");
     const { deps } = setup();
@@ -221,7 +221,7 @@ describe("MCP server wiring", () => {
     const [a, b] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(a), client.connect(b)]);
     const { tools } = await client.listTools();
-    assert.deepEqual(tools.map((t) => t.name).sort(), ["audit_token_security", "compare_watchlist", "detect_momentum_breakouts", "inspect_token", "scan_opportunities"]);
+    assert.deepEqual(tools.map((t) => t.name).sort(), ["audit_token_security", "compare_watchlist", "detect_fresh_births", "detect_momentum_breakouts", "inspect_token", "scan_opportunities"]);
     const res = await client.callTool({ name: "audit_token_security", arguments: { chain: "solana", address: GOOD } });
     const text = (res.content as { text: string }[])[0]!.text;
     assert.equal(JSON.parse(text).status, "SAFE");

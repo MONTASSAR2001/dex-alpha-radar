@@ -3,12 +3,15 @@ import { bestPairPerToken, dexUrl, type DexScreenerClient } from "./dexscreener.
 import { mapLimit } from "./limiter.js";
 import { fetchBrowserTrending, type BrowserTrendingOptions, type BrowserTrendingResult } from "./browserFallback.js";
 import { analyzeWashTrading, buyRatio, computeAlphaScore, detectBreakout, pairAgeHours, type BreakoutSignal } from "./scoring.js";
-import type { SecurityAuditor } from "./security.js";
+import { unverified, type SecurityAuditor } from "./security.js";
+import { GECKO_NETWORKS, geckoPoolToPair, type GeckoPool, type GeckoTerminalClient } from "./geckoterminal.js";
 import type { AlphaScore, Catalysts, DexPair, DexTokenSignal, SecurityReport } from "./types.js";
 
 export interface ToolDeps {
   dex: DexScreenerClient;
   security: SecurityAuditor;
+  /** GeckoTerminal client for `detect_fresh_births` (new pools). Optional: without it only DexScreener sources are used. */
+  gecko?: GeckoTerminalClient;
   now?: () => number;
   /** Browser trending source (optional; defaults to the Playwright implementation). */
   trending?: (opts: BrowserTrendingOptions) => Promise<BrowserTrendingResult>;
@@ -599,6 +602,313 @@ export async function compareWatchlist(deps: ToolDeps, p: CompareParams) {
     count: rows.length,
     ranking: flagDuplicateSymbols(rows.map((x, i) => ({ rank: i + 1, ...describePair(x.e.pair, x.e.catalysts, x.score, x.sec, now) }))),
     notFound,
+    disclaimer: DISCLAIMER,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Tool 6: detect_fresh_births
+// ---------------------------------------------------------------------------
+
+export interface FreshParams {
+  maxAgeMinutes?: number;
+  chain?: string;
+  minLiquidityUsd?: number;
+  limit?: number;
+  includeRisky?: boolean;
+  /** How long to wait for security audits before answering (audits keep running and are cached for the next call). Default 12. */
+  securityTimeoutSeconds?: number;
+}
+
+/** DexScreener search queries that surface the newest pairs on the big meme-coin DEXs. */
+const FRESH_QUERIES = ["pumpfun", "pumpswap", "raydium", "uniswap", "aerodrome", "pancakeswap"];
+const FRESH_MAX_AUDITS = 40;
+
+const clamp01 = (x: number) => Math.max(0, Math.min(1, x));
+/** Linear map of x from [a,b] onto [0,max], clamped. */
+const ramp = (x: number, a: number, b: number, max: number) => clamp01((x - a) / (b - a)) * max;
+const r1 = (n: number) => Math.round(n * 10) / 10;
+
+export function tradeLink(pair: DexPair): { label: string; url: string } | undefined {
+  const chain = pair.chainId.toLowerCase();
+  const addr = pair.baseToken.address;
+  const dex = (pair.dexId ?? "").toLowerCase();
+  if (chain === "solana") {
+    if (dex.includes("pump")) return { label: "Pump.fun", url: `https://pump.fun/coin/${addr}` };
+    if (dex.includes("raydium")) return { label: "Raydium", url: `https://raydium.io/swap/?inputMint=sol&outputMint=${addr}` };
+    return { label: "Jupiter", url: `https://jup.ag/swap/SOL-${addr}` };
+  }
+  if (chain === "base") return dex.includes("aerodrome") ? { label: "Aerodrome", url: `https://aerodrome.finance/swap?from=eth&to=${addr}` } : { label: "Uniswap", url: `https://app.uniswap.org/swap?chain=base&outputCurrency=${addr}` };
+  if (chain === "ethereum") return { label: "Uniswap", url: `https://app.uniswap.org/swap?chain=mainnet&outputCurrency=${addr}` };
+  if (chain === "arbitrum") return { label: "Uniswap", url: `https://app.uniswap.org/swap?chain=arbitrum&outputCurrency=${addr}` };
+  if (chain === "bsc") return { label: "PancakeSwap", url: `https://pancakeswap.finance/swap?chain=bsc&outputCurrency=${addr}` };
+  if (chain === "ton") return dex.includes("stonfi") || dex.includes("ston") ? { label: "STON.fi", url: `https://app.ston.fi/swap?ft=TON&tt=${addr}` } : { label: "DeDust", url: `https://dedust.io/swap/TON/${addr}` };
+  return undefined;
+}
+
+export function explorerLink(chain: string, address: string): { label: string; url: string } | undefined {
+  const c = chain.toLowerCase();
+  const map: Record<string, [string, string]> = {
+    solana: ["Solscan", `https://solscan.io/token/${address}`],
+    base: ["Basescan", `https://basescan.org/token/${address}`],
+    ethereum: ["Etherscan", `https://etherscan.io/token/${address}`],
+    bsc: ["BscScan", `https://bscscan.com/token/${address}`],
+    arbitrum: ["Arbiscan", `https://arbiscan.io/token/${address}`],
+    polygon: ["Polygonscan", `https://polygonscan.com/token/${address}`],
+    ton: ["Tonviewer", `https://tonviewer.com/${address}`],
+  };
+  const e = map[c];
+  return e ? { label: e[0], url: e[1] } : undefined;
+}
+
+export function extractSocials(pair: DexPair) {
+  const socials: { twitter?: string; telegram?: string; discord?: string; websites: string[]; other: { type: string; url: string }[] } = { websites: [], other: [] };
+  for (const w of pair.info?.websites ?? []) if (w.url && !socials.websites.includes(w.url)) socials.websites.push(w.url);
+  for (const s of pair.info?.socials ?? []) {
+    if (!s.url) continue;
+    const t = (s.type ?? "").toLowerCase();
+    if (t === "twitter" || t === "x") socials.twitter ??= s.url;
+    else if (t === "telegram") socials.telegram ??= s.url;
+    else if (t === "discord") socials.discord ??= s.url;
+    else socials.other.push({ type: t, url: s.url });
+  }
+  return socials;
+}
+
+/**
+ * Early Birth Velocity (0-100): how strongly a brand-new pair is being bought in its first minutes.
+ * 5m buy dominance (25) + 5m volume vs liquidity (20) + 5m price surge (20) + 5m activity depth (15)
+ * + verified socials (10) + freshness (10) + security (+10 SAFE, -5 WARNING, -50 DANGER) - wash-trading penalty.
+ */
+export function computeBirthVelocity(pair: DexPair, ageMinutes: number, maxAgeMinutes: number, security: SecurityReport | undefined) {
+  const m5 = pair.txns?.m5;
+  const m5Txns = (m5?.buys ?? 0) + (m5?.sells ?? 0);
+  const br = buyRatio(m5?.buys, m5?.sells);
+  const liq = pair.liquidity?.usd ?? 0;
+  const m5Vol = pair.volume?.m5 ?? 0;
+  const volToLiq = liq > 0 ? m5Vol / liq : 0;
+  const surge = pair.priceChange?.m5 ?? 0;
+  const socials = extractSocials(pair);
+  const wash = analyzeWashTrading(pair);
+
+  const buyPts = br === undefined || m5Txns < 3 ? 0 : ramp(br, 0.5, 0.85, 25);
+  const volPts = ramp(volToLiq, 0, 0.5, 20);
+  const surgePts = ramp(surge, 0, 30, 20);
+  const depthPts = ramp(m5Txns, 0, 40, 15);
+  const socialPts = (socials.websites.length ? 4 : 0) + (socials.twitter ? 3 : 0) + (socials.telegram ? 3 : 0);
+  const freshPts = ramp(maxAgeMinutes - ageMinutes, 0, maxAgeMinutes, 10);
+  let secDelta = 0;
+  let rejected = false;
+  const reasons: string[] = [];
+  if (security?.status === "SAFE") {
+    secDelta = 10;
+    reasons.push("Security audit passed (SAFE)");
+  } else if (security?.status === "WARNING") {
+    secDelta = -5;
+    reasons.push(`Security warning. ${security.verdict}`);
+  } else if (security?.status === "DANGER") {
+    secDelta = -50;
+    rejected = true;
+    reasons.push(`REJECTED: security DANGER. ${security.verdict}`);
+  } else {
+    reasons.push("Security UNVERIFIED (brand-new tokens often have no audit data yet): treat as unsafe");
+  }
+  if (br !== undefined && m5Txns >= 3) reasons.push(`5m buy dominance ${Math.round(br * 100)}% (${m5Txns} txns)`);
+  if (volToLiq > 0) reasons.push(`5m volume is ${r1(volToLiq)}x liquidity`);
+  if (surge > 0) reasons.push(`5m price +${r1(surge)}%`);
+  if (socialPts) reasons.push("Socials/website listed");
+  const raw = buyPts + volPts + surgePts + depthPts + socialPts + freshPts - wash.penalty + secDelta;
+  const warnings: string[] = [];
+  if (ageMinutes < 3) warnings.push("Minute-0 launch: extreme volatility and the highest rug risk window");
+  if (liq > 0 && liq < 5_000) warnings.push(`Thin liquidity ($${Math.round(liq)}): price can be moved easily`);
+  if (!liq) warnings.push("Liquidity not reported yet");
+  if (m5Txns < 5) warnings.push("Very few transactions so far: velocity is not meaningful yet");
+  if (wash.suspected) warnings.push("Volume looks bot-driven (wash trading suspected)");
+  return {
+    velocityScore: r1(Math.max(0, Math.min(100, raw))),
+    rejected,
+    breakdown: { buyPressure: r1(buyPts), volumeToLiquidity: r1(volToLiq > 0 ? volPts : 0), priceSurge: r1(surgePts), activityDepth: r1(depthPts), socials: socialPts, freshness: r1(freshPts), manipulationPenalty: -r1(wash.penalty), securityAdjustment: secDelta },
+    reasons,
+    warnings,
+    buyRatio5m: br === undefined ? undefined : round3(br),
+    washSuspected: wash.suspected,
+  };
+}
+
+
+/**
+ * Audits a shortlist with a time budget. EVM audits are batched per chain (one GoPlus request per 20 tokens) and all chains
+ * run in parallel. Anything unfinished when the budget expires is reported as UNVERIFIED (fail closed) and flagged
+ * `pending`; the audit keeps running and lands in the cache, so the next call returns it.
+ */
+async function auditShortlist(deps: ToolDeps, items: { chain: string; address: string }[], budgetMs: number) {
+  const byChain = new Map<string, string[]>();
+  for (const it of items) byChain.set(it.chain.toLowerCase(), [...(byChain.get(it.chain.toLowerCase()) ?? []), it.address]);
+  const done = new Map<string, SecurityReport>();
+  const work = Promise.all([...byChain].map(async ([chain, addrs]) => {
+    const res = await deps.security.auditBatch(chain, addrs);
+    for (const [a, r] of res) done.set(tokenKey(chain, a), r);
+  }));
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  await Promise.race([work.catch(() => undefined), new Promise<void>((resolve) => { timer = setTimeout(resolve, Math.max(0, budgetMs)); })]);
+  if (timer) clearTimeout(timer);
+  let pending = 0;
+  const reports = items.map((it) => {
+    const r = done.get(tokenKey(it.chain, it.address));
+    if (r) return { report: r as SecurityReport | undefined, pending: false };
+    pending++;
+    return { report: unverified(it.chain.toLowerCase(), it.address, "Audit still running (provider rate limit): treat as unsafe until it completes", "none") as SecurityReport | undefined, pending: true };
+  });
+  return { reports, pending };
+}
+
+export async function detectFreshBirths(deps: ToolDeps, p: FreshParams = {}) {
+  const now = (deps.now ?? Date.now)();
+  const chain = normalizeChain(p.chain ?? "all");
+  const maxAgeMinutes = p.maxAgeMinutes ?? 20;
+  const minLiq = p.minLiquidityUsd ?? 0;
+  const limit = p.limit ?? 30;
+  const includeRisky = p.includeRisky ?? false;
+  const warnings: string[] = [];
+  const cutoffMs = maxAgeMinutes * 60_000;
+
+  // ---- 1. discovery, all sources in parallel (any one may fail)
+  const geckoChains = Object.keys(GECKO_NETWORKS).filter((c) => chain === "all" || c === chain);
+  const [feeds, gecko, searches] = await Promise.all([
+    collectCandidates(deps.dex, chain, 500).then((d) => d, (e) => ({ candidates: [] as Candidate[], warnings: [`DexScreener feeds unavailable: ${e instanceof Error ? e.message : String(e)}`] })),
+    deps.gecko
+      ? Promise.allSettled(geckoChains.map((c) => deps.gecko!.newPools(c)))
+      : Promise.resolve([] as PromiseSettledResult<GeckoPool[]>[]),
+    Promise.allSettled(FRESH_QUERIES.map((q) => deps.dex.search(q))),
+  ]);
+  warnings.push(...feeds.warnings);
+  if (!deps.gecko) warnings.push("GeckoTerminal client not configured: new_pools source skipped");
+  const geckoPools: GeckoPool[] = [];
+  gecko.forEach((r, i) => {
+    if (r.status === "fulfilled") geckoPools.push(...r.value);
+    else warnings.push(`GeckoTerminal ${geckoChains[i]} new_pools unavailable: ${r.reason instanceof Error ? r.reason.message : String(r.reason)}`);
+  });
+  const searchPairs = searches.flatMap((r) => (r.status === "fulfilled" ? r.value : [])).filter((pair) => chain === "all" || pair.chainId.toLowerCase() === chain);
+
+  const merged = new Map<string, Candidate>(feeds.candidates.map((c) => [tokenKey(c.chainId, c.tokenAddress), c]));
+  const addSource = (chainId: string, address: string, source: string) => {
+    const key = tokenKey(chainId, address);
+    const cur = merged.get(key) ?? { chainId: chainId.toLowerCase(), tokenAddress: address, sources: [], boostAmount: 0, cto: false };
+    if (!cur.sources.includes(source)) cur.sources.push(source);
+    merged.set(key, cur);
+  };
+  const freshGecko = geckoPools.filter((g) => g.createdAt !== undefined && now - g.createdAt <= cutoffMs);
+  for (const g of freshGecko) addSource(g.chainId, g.baseToken.address, "gecko_new_pools");
+  for (const sp of searchPairs) if (sp.pairCreatedAt && now - sp.pairCreatedAt <= cutoffMs) addSource(sp.chainId, sp.baseToken.address, "dexscreener_search");
+
+  // ---- 2. authoritative DexScreener pair stats for every candidate, then merge GeckoTerminal-only pools
+  const enriched = await fetchCandidatePairs(deps.dex, [...merged.values()]).catch((e) => {
+    warnings.push(`DexScreener pair lookup failed: ${e instanceof Error ? e.message : String(e)}`);
+    return [] as Enriched[];
+  });
+  type Row = { pair: DexPair; catalysts: Catalysts; source: "dexscreener" | "geckoterminal"; discovery: string[] };
+  const rows = new Map<string, Row>();
+  for (const e of enriched) rows.set(tokenKey(e.pair.chainId, e.pair.baseToken.address), { pair: e.pair, catalysts: e.catalysts, source: "dexscreener", discovery: merged.get(tokenKey(e.pair.chainId, e.pair.baseToken.address))?.sources ?? [] });
+  // search results are full pairs: use them when tokens/v1 had nothing (e.g. just indexed)
+  for (const sp of searchPairs) {
+    const key = tokenKey(sp.chainId, sp.baseToken.address);
+    if (!rows.has(key) && sp.pairCreatedAt && now - sp.pairCreatedAt <= cutoffMs) rows.set(key, { pair: sp, catalysts: { boosted: (sp.boosts?.active ?? 0) > 0, cto: false }, source: "dexscreener", discovery: ["dexscreener_search"] });
+  }
+  const geckoImage = new Map<string, string>();
+  for (const g of geckoPools) if (g.baseToken.imageUrl) geckoImage.set(tokenKey(g.chainId, g.baseToken.address), g.baseToken.imageUrl);
+  for (const g of freshGecko) {
+    const key = tokenKey(g.chainId, g.baseToken.address);
+    if (!rows.has(key)) rows.set(key, { pair: geckoPoolToPair(g), catalysts: { boosted: false, cto: false }, source: "geckoterminal", discovery: ["gecko_new_pools"] });
+    else {
+      const r = rows.get(key)!;
+      if (!r.discovery.includes("gecko_new_pools")) r.discovery.push("gecko_new_pools");
+      // GeckoTerminal indexes pools earlier than DexScreener: keep the earlier creation time
+      if (g.createdAt !== undefined && (r.pair.pairCreatedAt === undefined || g.createdAt < r.pair.pairCreatedAt)) r.pair = { ...r.pair, pairCreatedAt: g.createdAt };
+    }
+  }
+
+  // ---- 3. age window + liquidity floor, freshest first
+  const fresh = [...rows.values()]
+    .map((r) => ({ ...r, ageSec: r.pair.pairCreatedAt ? Math.max(0, Math.round((now - r.pair.pairCreatedAt) / 1000)) : undefined }))
+    .filter((r) => r.ageSec !== undefined && r.ageSec <= maxAgeMinutes * 60 && (r.pair.liquidity?.usd ?? 0) >= minLiq)
+    .sort((a, b) => a.ageSec! - b.ageSec!);
+
+  // ---- 4. instant security check on the freshest candidates, then score
+  const shortlist = fresh.slice(0, Math.min(FRESH_MAX_AUDITS, Math.max(limit * 2, limit)));
+  const { reports: audits, pending: auditsPending } = await auditShortlist(deps, shortlist.map((r) => ({ chain: r.pair.chainId, address: r.pair.baseToken.address })), (p.securityTimeoutSeconds ?? 12) * 1000);
+  if (auditsPending) warnings.push(`${auditsPending} security audit(s) are still running (provider rate limits): those tokens are UNVERIFIED for now, call again in a few seconds`);
+  const scored = shortlist.map((r, i) => {
+    const sec = audits[i]!.report;
+    const ageMinutes = r1(r.ageSec! / 60);
+    const v = computeBirthVelocity(r.pair, r.ageSec! / 60, maxAgeMinutes, sec);
+    const pair = r.pair;
+    const image = pair.info?.imageUrl ?? geckoImage.get(tokenKey(pair.chainId, pair.baseToken.address)) ?? null;
+    const trade = tradeLink(pair);
+    const explorer = explorerLink(pair.chainId, pair.baseToken.address);
+    const dexscreenerUrl = dexUrl(pair);
+    const w = analyzeWashTrading(pair);
+    return {
+      symbol: pair.baseToken.symbol,
+      name: pair.baseToken.name,
+      chain: pair.chainId,
+      tokenAddress: pair.baseToken.address,
+      pairAddress: pair.pairAddress,
+      dex: pair.dexId,
+      quote: pair.quoteToken?.symbol,
+      imageUrl: image,
+      ageSeconds: r.ageSec!,
+      ageMinutes,
+      isMinuteZero: r.ageSec! < 180,
+      pairCreatedAt: pair.pairCreatedAt!,
+      pairCreatedAtIso: new Date(pair.pairCreatedAt!).toISOString(),
+      /** Exact string from the API; never reformat. */
+      priceUsd: pair.priceUsd,
+      marketCap: pair.marketCap,
+      fdv: pair.fdv,
+      liquidityUsd: pair.liquidity?.usd,
+      volumeUsd: { m5: pair.volume?.m5, h1: pair.volume?.h1, h24: pair.volume?.h24 },
+      priceChangePct: { m5: pair.priceChange?.m5, h1: pair.priceChange?.h1, h6: pair.priceChange?.h6, h24: pair.priceChange?.h24 },
+      txns: { m5: pair.txns?.m5, h1: pair.txns?.h1 },
+      buyRatio: { m5: v.buyRatio5m, h1: round3(buyRatio(pair.txns?.h1?.buys, pair.txns?.h1?.sells)) },
+      velocityScore: v.velocityScore,
+      scoreBreakdown: v.breakdown,
+      reasons: v.reasons,
+      warnings: v.warnings,
+      rejected: v.rejected,
+      tradeQuality: { avgTradeUsd1h: w.avgTradeUsd, txns1h: w.txns1h, volumeToLiquidity1h: w.volumeToLiquidity, washSuspected: w.suspected },
+      security: securitySummary(sec),
+      auditPending: audits[i]!.pending,
+      socials: extractSocials(pair),
+      dexscreenerUrl,
+      tradeUrl: trade?.url ?? dexscreenerUrl,
+      tradeLabel: trade?.label ?? "DexScreener",
+      explorerUrl: explorer?.url ?? null,
+      explorerLabel: explorer?.label ?? null,
+      source: r.source,
+      discovery: r.discovery,
+      catalysts: r.catalysts,
+    };
+  });
+  const results = flagDuplicateSymbols(scored.filter((x) => includeRisky || !x.rejected))
+    .sort((a, b) => a.ageSeconds - b.ageSeconds)
+    .slice(0, limit)
+    .map((x, i) => ({ rank: i + 1, ...x }));
+
+  return {
+    generatedAt: new Date(now).toISOString(),
+    filters: { chain, maxAgeMinutes, minLiquidityUsd: minLiq, limit, includeRisky },
+    stats: {
+      candidates: merged.size,
+      geckoNewPools: geckoPools.length,
+      pairsFetched: enriched.length,
+      withinWindow: fresh.length,
+      minuteZero: fresh.filter((x) => x.ageSec! < 180).length,
+      audited: shortlist.length - auditsPending,
+      auditsPending,
+      returned: results.length,
+    },
+    warnings,
+    results,
     disclaimer: DISCLAIMER,
   };
 }

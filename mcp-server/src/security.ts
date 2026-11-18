@@ -1,6 +1,6 @@
 import { GOPLUS_CHAIN_IDS, looksLikeEvmAddress, normalizeAddress, tokenKey } from "./chains.js";
 import { fetchJson, HttpError, type HttpOptions } from "./http.js";
-import { TokenBucket, TtlCache, type Clock, type Sleeper } from "./limiter.js";
+import { chunk, mapLimit, TokenBucket, TtlCache, type Clock, type Sleeper } from "./limiter.js";
 import type { SecurityReport, SecurityStatus } from "./types.js";
 
 export const RUGCHECK_BASE = "https://api.rugcheck.xyz";
@@ -312,6 +312,53 @@ export class SecurityAuditor {
       if (e instanceof UnverifiedResult) return e.report;
       return unverified(chain, addr, `Security check failed: ${e instanceof Error ? e.message : String(e)}`);
     }
+  }
+
+  /**
+   * Audits many tokens of one chain. EVM contracts go to GoPlus in batches of up to 20 addresses per request (one
+   * rate-limit token per batch instead of one per address); Solana mints use RugCheck with limited concurrency;
+   * chains without a provider resolve instantly as UNVERIFIED. Respects and fills the same cache as `audit()`.
+   */
+  async auditBatch(chainId: string, addresses: readonly string[]): Promise<Map<string, SecurityReport>> {
+    const chain = chainId.toLowerCase();
+    const out = new Map<string, SecurityReport>();
+    const key = (a: string) => `lite|${tokenKey(chain, a.trim())}`;
+    const deepKey = (a: string) => `deep|${tokenKey(chain, a.trim())}`;
+    const todo: string[] = [];
+    for (const raw of new Set(addresses.map((a) => a.trim()))) {
+      const cached = this.cache.get(deepKey(raw)) ?? this.cache.get(key(raw));
+      if (cached) out.set(raw, cached);
+      else todo.push(raw);
+    }
+    const numeric = GOPLUS_CHAIN_IDS[chain];
+    if (chain === "solana" || numeric === undefined) {
+      const reports = await mapLimit(todo, 5, (a) => this.audit(chain, a));
+      todo.forEach((a, i) => out.set(a, reports[i]!));
+      return out;
+    }
+    const valid = todo.filter((a) => looksLikeEvmAddress(a));
+    for (const a of todo) if (!valid.includes(a)) out.set(a, unverified(chain, a, "Not a valid EVM contract address"));
+    await Promise.all(
+      chunk(valid, 20).map(async (group) => {
+        await this.goplusBucket.acquire();
+        try {
+          const res = await fetchJson<{ code?: number; message?: string; result?: Record<string, GoPlusTokenSecurity> | unknown[] }>(
+            `${this.goBase}/api/v1/token_security/${numeric}?contract_addresses=${group.map((a) => a.toLowerCase()).join(",")}`,
+            this.http,
+          );
+          if (res.code !== undefined && res.code !== 1) throw new Error(`GoPlus error ${res.code}: ${res.message ?? "unknown"}`);
+          const result = res.result && !Array.isArray(res.result) ? res.result : {};
+          for (const a of group) {
+            const r = classifyGoPlus(chain, a, result[a.toLowerCase()] ?? result[normalizeAddress(chain, a)]);
+            out.set(a, r);
+            if (r.status !== "UNVERIFIED") this.cache.set(key(a), r); // like audit(): UNVERIFIED is never cached
+          }
+        } catch (e) {
+          for (const a of group) out.set(a, unverified(chain, a, `GoPlus unavailable: ${errMsg(e)}`, "goplus"));
+        }
+      }),
+    );
+    return out;
   }
 
   private async auditSolana(mint: string, deep: boolean): Promise<SecurityReport> {

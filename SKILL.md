@@ -1,6 +1,6 @@
 ---
 name: dex-alpha-radar
-description: Discover and vet meme coin opportunities in real time. Use when the user asks to find trending, new, boosted or breakout meme coins or tokens, check whether a token (symbol, name or contract address) is safe, a rug pull or a honeypot, audit a Solana mint or EVM contract, compare a watchlist of tokens, or look at DexScreener, RugCheck or GoPlus data. Scores momentum 0-100 and audits contracts (Solana via RugCheck; Ethereum, Base, BSC, Arbitrum, Polygon via GoPlus). Research only, never executes trades.
+description: Discover and vet meme coin opportunities in real time. Use when the user asks to find trending, new, boosted or breakout meme coins or tokens, or brand-new launches in their first minutes (fresh births, minute-0, just launched, sniping research), check whether a token (symbol, name or contract address) is safe, a rug pull or a honeypot, audit a Solana mint or EVM contract, compare a watchlist of tokens, or look at DexScreener, RugCheck or GoPlus data. Scores momentum 0-100 and audits contracts (Solana via RugCheck; Ethereum, Base, BSC, Arbitrum, Polygon via GoPlus). Research only, never executes trades.
 license: MIT
 compatibility: Needs Node.js 20+ and internet access. Uses the dex-alpha-radar MCP server (zero config) or the public REST APIs directly.
 metadata:
@@ -17,7 +17,7 @@ Real-time meme coin discovery, momentum scoring and anti-rug auditing, backed by
 
 ## Tools
 
-The MCP server `dex-alpha-radar` exposes five tools. Prefer them over scraping or ad-hoc HTTP calls: they are rate-limit safe, cached for 12 s, and fail closed.
+The MCP server `dex-alpha-radar` exposes six tools. Prefer them over scraping or ad-hoc HTTP calls: they are rate-limit safe, cached for 12 s, and fail closed.
 
 | Tool | Use it when the user wants to... | Key inputs |
 |---|---|---|
@@ -25,6 +25,7 @@ The MCP server `dex-alpha-radar` exposes five tools. Prefer them over scraping o
 | `inspect_token` | deep-dive one token by symbol, name or contract address | `query`, optional `chain` |
 | `audit_token_security` | check whether a contract is safe | `chain`, `address` |
 | `detect_momentum_breakouts` | catch sudden 5-minute volume and buy-pressure surges early | `chain`, `minAcceleration` (2), `minBuyRatio` (0.6), `limit` |
+| `detect_fresh_births` | catch tokens in their first minutes (0-20 min, incl. Minute 0-2 launches), freshest first, with logo, exact age and every direct link | `maxAgeMinutes` (20), `chain`, `minLiquidityUsd` (0), `limit` (30), `includeRisky` (false) |
 | `compare_watchlist` | rank several tokens side by side | `tokens: [{address, chain?}]` |
 
 `useBrowserTrending: true` additionally reads DexScreener's trending view with a local headless Chrome. Use it only if the user asks for "trending" specifically, because it is slower (up to about 40 s) and optional. Check the `trending.status` field in the result: if it is not `ok` (for example `blocked` by a bot check, or `unavailable` without Chrome), tell the user the trending view was skipped and that results come from the API sources only. Never claim trending data was used when the status is not `ok`.
@@ -34,7 +35,7 @@ If the tools are not available, see [Setup](#setup-if-the-tools-are-missing).
 ## Workflow (follow in order)
 
 1. **Clarify only what is missing.** Defaults are fine: chain `all`, liquidity $15k, age 72 h. Do not interrogate the user.
-2. **Discover.** `scan_opportunities` for broad requests, `detect_momentum_breakouts` for "what is pumping right now", `inspect_token` when a specific token is named.
+2. **Discover.** `scan_opportunities` for broad requests, `detect_momentum_breakouts` for "what is pumping right now", `detect_fresh_births` for "what just launched" / "minute-0 tokens", `inspect_token` when a specific token is named.
 3. **Verify every candidate you present.** Results already include a security audit. For anything you will highlight, also call `audit_token_security` (deep audit: authority addresses, holder concentration) and check `inspect_token.warnings` for copycat tokens.
 4. **Surface every warning.** Each result has a `warnings` array (bot volume, holder concentration, unverified contract, thin liquidity, very new pair, copycat tickers). Show the warnings for every token you present; never drop them to make a list look cleaner.
 5. **Cross-check identity.** Symbols are not unique and scammers clone popular tickers. Always show the full contract address and the DexScreener URL, and state which chain it is on.
@@ -146,6 +147,14 @@ Rejected tokens are listed last and marked **REJECTED**. List any `notFound` add
 |---|-------|-------|------------------------|---------|--------|---------|----------|----------|----------|
 ```
 If `results` is empty, say no breakout met the thresholds and show `nearMisses`. Breakouts are early and unconfirmed: note that a single 5-minute window can be wash trading.
+
+### Fresh births (first minutes)
+
+```markdown
+| # | Age | Token | Chain / DEX | Price | MCap | Liquidity | 5m Vol | 5m % | 5m Buys/Sells | Velocity | Security |
+|---|-----|-------|-------------|-------|------|-----------|--------|------|---------------|----------|----------|
+```
+Sort order is `ageSeconds` ascending (freshest first); show the exact age (`0m 42s`, `4m`). For every token also give the links: `dexscreenerUrl`, `tradeUrl` (`tradeLabel`), `explorerUrl` (`explorerLabel`) and any `socials`. Label `isMinuteZero` tokens (under 3 minutes) clearly as Minute-0 launches and say that this is the highest rug-risk window: most have no audit data yet (`UNVERIFIED` = unsafe), liquidity is thin and 5-minute stats are statistically meaningless with a handful of transactions. A high `velocityScore` means fast early buying, not safety. Never present a fresh birth as a recommendation.
 
 ## Required disclaimer (end every answer that lists tokens)
 

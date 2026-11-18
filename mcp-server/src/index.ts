@@ -5,10 +5,12 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
 import { DexScreenerClient } from "./dexscreener.js";
+import { GeckoTerminalClient } from "./geckoterminal.js";
 import { SecurityAuditor } from "./security.js";
 import {
   auditTokenSecurity,
   compareWatchlist,
+  detectFreshBirths,
   detectMomentumBreakouts,
   inspectToken,
   scanOpportunities,
@@ -36,7 +38,7 @@ async function run(fn: () => Promise<Payload>) {
   }
 }
 
-export function createServer(deps: ToolDeps = { dex: new DexScreenerClient(), security: new SecurityAuditor() }): McpServer {
+export function createServer(deps: ToolDeps = { dex: new DexScreenerClient(), security: new SecurityAuditor(), gecko: new GeckoTerminalClient() }): McpServer {
   const server = new McpServer({ name: SERVER_NAME, version: SERVER_VERSION });
   const annotations = { readOnlyHint: true, idempotentHint: true, openWorldHint: true } as const;
 
@@ -113,6 +115,25 @@ export function createServer(deps: ToolDeps = { dex: new DexScreenerClient(), se
       annotations,
     },
     (args) => run(() => detectMomentumBreakouts(deps, args)),
+  );
+
+  server.registerTool(
+    "detect_fresh_births",
+    {
+      title: "Detect Minute-0 fresh births",
+      description:
+        "Catches meme coins in their first minutes (default 0-20 minutes old, including Minute 0-2 launches), freshest first. Hunts DexScreener latest profiles/boosts/takeovers + DexScreener search for the newest pairs + GeckoTerminal new_pools (solana, base, ethereum, bsc, ton, arbitrum), de-duplicates by chain+address, runs an instant RugCheck/GoPlus audit and scores Early Birth Velocity (5m buy/sell ratio, 5m volume vs liquidity, 5m price surge, socials, security). Returns exact ageSeconds/ageMinutes, pairCreatedAt, imageUrl, price, market cap, liquidity, 5m/1h volume and % change, 5m buys/sells, security verdict, and all direct links (dexscreenerUrl, tradeUrl for Pump.fun/Raydium/Jupiter/Uniswap/PancakeSwap, explorerUrl for Solscan/Basescan/Etherscan/BscScan, socials: twitter/telegram/websites). Brand-new tokens are extremely risky: UNVERIFIED means no audit data, never safe.",
+      inputSchema: {
+        maxAgeMinutes: z.number().min(1).max(180).default(20).optional().describe("Maximum pair age in minutes (default 20)."),
+        chain: chainParam.default("all").optional(),
+        minLiquidityUsd: z.number().min(0).default(0).optional().describe("Minimum liquidity in USD (default 0: nothing is hidden for being tiny)."),
+        limit: z.number().int().min(1).max(100).default(30).optional().describe("Max results (default 30)."),
+        includeRisky: z.boolean().default(false).optional().describe("Include DANGER-rated tokens (default false)."),
+        securityTimeoutSeconds: z.number().min(0).max(60).default(12).optional().describe("How long to wait for RugCheck/GoPlus audits before answering (default 12). Unfinished audits are reported UNVERIFIED + auditPending and complete in the background."),
+      },
+      annotations,
+    },
+    (args) => run(() => detectFreshBirths(deps, args)),
   );
 
   server.registerTool(

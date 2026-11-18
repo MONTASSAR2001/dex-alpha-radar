@@ -188,6 +188,23 @@ Finds sudden 5-minute volume surges and buy-pressure spikes (`m5` vs the `h1` ba
 
 A breakout also needs at least 8 transactions, $1k of 5-minute volume and a positive 5-minute price change, so tiny samples cannot trigger it. When nothing qualifies you get the three `nearMisses`.
 
+### `detect_fresh_births`
+
+Catches meme coins in their **first minutes** (default 0-20 minutes old, including Minute 0-2 launches), freshest first. Sources, run in parallel: DexScreener latest profiles / boosts / community takeovers, DexScreener search for the newest pairs (`pumpfun`, `pumpswap`, `raydium`, `uniswap`, `aerodrome`, `pancakeswap`) and GeckoTerminal `new_pools` for `solana`, `base`, `ethereum`, `bsc`, `ton`, `arbitrum` (GeckoTerminal indexes pools earlier than DexScreener, so a pool that has no DexScreener pair yet is still returned, with `source: "geckoterminal"`). Candidates are de-duplicated by chain + address (EVM lowercased, Solana case preserved), priced through DexScreener batch lookups, security-audited (RugCheck / GoPlus) and scored.
+
+| Parameter | Type | Default | Description |
+|---|---|---|---|
+| `maxAgeMinutes` | number | `20` | Maximum pair age (1-180) |
+| `chain` | string | `"all"` | Chain filter |
+| `minLiquidityUsd` | number | `0` | Minimum liquidity (nothing is hidden for being tiny by default) |
+| `limit` | integer | `30` | Max results (1-100) |
+| `includeRisky` | boolean | `false` | Include `DANGER` tokens |
+| `securityTimeoutSeconds` | number | `12` | How long to wait for audits; unfinished ones are `UNVERIFIED` + `auditPending` and complete in the cache for the next call. EVM audits are batched (20 addresses per GoPlus request) |
+
+Each result has `ageSeconds` / `ageMinutes` (results are sorted by it, ascending), `isMinuteZero` (< 3 min), `pairCreatedAt` (epoch ms) and `pairCreatedAtIso`, `imageUrl`, exact `priceUsd`, `marketCap`, `fdv`, `liquidityUsd`, `volumeUsd {m5,h1,h24}`, `priceChangePct {m5,h1,h6,h24}`, `txns {m5,h1}`, `buyRatio`, `security` verdict, and every direct link: `dexscreenerUrl`, `tradeUrl` + `tradeLabel` (Pump.fun / Raydium / Jupiter / Uniswap / Aerodrome / PancakeSwap / STON.fi / DeDust), `explorerUrl` + `explorerLabel` (Solscan / Basescan / Etherscan / BscScan / Arbiscan / Tonviewer) and `socials {twitter, telegram, discord, websites[], other[]}`.
+
+**Early Birth Velocity** (`velocityScore`, 0-100, with `scoreBreakdown` and `reasons`): 5m buy dominance (25) + 5m volume vs liquidity (20) + 5m price surge (20) + 5m activity depth (15) + verified socials (10) + freshness (10) + security (+10 SAFE, -5 WARNING, -50 DANGER and rejected) minus the wash-trading penalty. Brand-new tokens frequently have no audit data yet: `UNVERIFIED` means unsafe, never safe. Minute-0 launches carry the highest rug risk of anything this skill returns.
+
 ### `compare_watchlist`
 
 Side-by-side ranking of up to 60 tokens in minimal API calls (30 addresses per DexScreener request).
@@ -278,10 +295,10 @@ SKIP_LIVE=1 npm test      # skip the live network tests explicitly
 npm run validate          # offline manifest + SKILL.md spec checks
 claude plugin validate .  # Claude Code manifest validation
 npm run verify:svg        # render assets/architecture.svg in headless Chrome and check its geometry
-npm run demo              # run all 5 tools through the stdio launcher against live data and print tables
+npm run demo              # run all 6 tools through the stdio launcher against live data and print tables
 ```
 
-- **Unit** (`test/unit/`): scoring math, token-bucket pacing, TTL cache, 30-address batch grouping, backoff, RugCheck/GoPlus classification, fail-closed behaviour, all five tools against mocked APIs, and the MCP wiring over an in-memory transport.
+- **Unit** (`test/unit/`): scoring math, token-bucket pacing, TTL cache, 30-address batch grouping, backoff, RugCheck/GoPlus classification, fail-closed behaviour, all six tools against mocked APIs, and the MCP wiring over an in-memory transport.
 - **Integration** (`test/integration/`): real endpoints for schema compatibility, end-to-end tool runs, a stdio handshake through `scripts/mcp-launch.mjs`, the browser fallback against a real headless Chrome (local fixture pages: trending rows, a verification interstitial, an unreachable page) plus live dexscreener.com, and the architecture diagram rendered in Chrome. Suites that need the network or a browser are reported as skipped, with the reason, when it is unavailable.
 - **Diagram check**: `npm run verify:svg` measures every label's rendered bounding box and fails on clipped text, overlapping labels, text outside the viewBox or partially overlapping boxes.
 
@@ -290,14 +307,14 @@ npm run demo              # run all 5 tools through the stdio launcher against l
 ```text
 SKILL.md                     universal agent skill (workflow, rules, templates)
 scripts/mcp-launch.mjs       zero-config launcher: install + build on first start, then stdio
-scripts/demo.mjs             live end-to-end demo of all five tools
+scripts/demo.mjs             live end-to-end demo of all six tools
 scripts/verify-svg.mjs       geometry checker for the architecture diagram
 mcp-server/src/
   dexscreener.ts             rate-limited client, token buckets, 12 s TTL cache
   security.ts                RugCheck + GoPlus auditor, fail-closed classification
   scoring.ts                 Alpha Score, anti-wash-trading, warnings, breakout detection
   browserFallback.ts         optional headless-Chrome trending extraction (degrades gracefully)
-  tools.ts                   the five tool implementations
+  tools.ts                   the six tool implementations (+ geckoterminal.ts client)
   index.ts                   MCP server (stdio) and tool registration
 .claude-plugin/              Claude Code plugin + marketplace manifests
 gemini-extension.json        Antigravity / Gemini CLI extension
